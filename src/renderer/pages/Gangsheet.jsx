@@ -30,6 +30,22 @@ export default function Gangsheet() {
     else window.open(url, '_blank');
   };
 
+  const togglePrinted = async (g) => {
+    const printed = !g.pivot?.printed_at;
+    // optimistic update
+    setList(prev => ({
+      ...prev,
+      data: prev.data.map(x => x.id === g.id
+        ? { ...x, pivot: { ...x.pivot, printed_at: printed ? new Date().toISOString() : null } }
+        : x),
+    }));
+    try {
+      await api.post(`/partner/gangsheets/${g.id}/printed`, { printed });
+    } catch {
+      fetchList(); // revert on error
+    }
+  };
+
   return (
     <div className="p-6 space-y-4">
       <div>
@@ -69,15 +85,16 @@ export default function Gangsheet() {
               <th className="px-3 py-2 text-left">Line</th>
               <th className="px-3 py-2 text-right">Orders</th>
               <th className="px-3 py-2 text-right">Metas</th>
+              <th className="px-3 py-2 text-center">Đã in</th>
               <th className="px-3 py-2 text-left">When</th>
               <th className="px-3 py-2 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="p-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-neutral-400">Loading…</td></tr>
             ) : list.data.length === 0 ? (
-              <tr><td colSpan={7} className="p-6 text-center text-neutral-400">Chưa có gangsheet nào được phân quyền.</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-neutral-400">Chưa có gangsheet nào được phân quyền.</td></tr>
             ) : list.data.map(g => (
               <tr key={g.id} className="border-b border-neutral-100 hover:bg-orange-50/30">
                 <td className="px-3 py-2 font-mono text-xs text-neutral-700 truncate max-w-[260px]">{g.filename}</td>
@@ -87,6 +104,10 @@ export default function Gangsheet() {
                 <td className="px-3 py-2 font-mono text-xs">{g.line_id || '-'}</td>
                 <td className="px-3 py-2 text-right">{g.orders_count}</td>
                 <td className="px-3 py-2 text-right">{g.metas_count}</td>
+                <td className="px-3 py-2 text-center">
+                  <input type="checkbox" checked={!!g.pivot?.printed_at} onChange={() => togglePrinted(g)}
+                    className="accent-green-600 w-4 h-4" title={g.pivot?.printed_at ? `Đã in ${new Date(g.pivot.printed_at).toLocaleString()}` : 'Tích khi in xong'} />
+                </td>
                 <td className="px-3 py-2 text-xs text-neutral-500">{new Date(g.created_at).toLocaleString()}</td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex gap-3 justify-end">
