@@ -17,10 +17,10 @@ export default function Login() {
     setLoading(true);
     try {
       const u = await login(email, password);
-      // Admin-only app — reject anyone else.
-      if (u?.role?.slug !== 'admin') {
+      // Partner app — allow role partner (admin too for support).
+      if (!['partner', 'admin'].includes(u?.role?.slug)) {
         await logout();
-        setError('App này chỉ dành cho tài khoản admin.');
+        setError('App này chỉ dành cho tài khoản partner.');
         return;
       }
       navigate('/');
@@ -41,7 +41,7 @@ export default function Login() {
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
           <img src={logo} alt="BullStart" className="h-28 mb-3 drop-shadow-[0_4px_20px_rgba(234,88,12,0.15)]" />
-          <p className="text-neutral-500 text-sm tracking-wide">Warehouse / Inventory Management</p>
+          <p className="text-neutral-500 text-sm tracking-wide">Partner Portal — Gangsheet</p>
         </div>
 
         {/* Login card */}
