@@ -5,7 +5,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "webpack serve --config webpack.renderer.config.js & electron .",
+    "dev": "BS_DEV=1 webpack serve --config webpack.renderer.config.js & BS_DEV=1 electron .",
     "build:renderer": "webpack --config webpack.renderer.config.js --mode production",
     "build:win": "npm run build:renderer && electron-builder --win",
     "build:mac": "npm run build:renderer && electron-builder --mac",

@@ -21,7 +21,10 @@ function createWindow() {
     show: false,
   });
 
-  if (process.env.NODE_ENV === 'development') {
+  // Load the dev server ONLY when explicitly asked via BS_DEV=1 — NOT the
+  // global NODE_ENV (which may leak from other apps and make us load their
+  // dev-server on :3000). Default: always load this app's own build.
+  if (!app.isPackaged && process.env.BS_DEV === '1') {
     mainWindow.loadURL('http://localhost:3000');
     mainWindow.webContents.openDevTools();
   } else {
