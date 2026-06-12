@@ -44,7 +44,11 @@
       }
     ]
   },
-  "keywords": ["partner", "gangsheet", "bullstart"],
+  "keywords": [
+    "partner",
+    "gangsheet",
+    "bullstart"
+  ],
   "author": "BullStart Team",
   "license": "ISC",
   "type": "commonjs",
@@ -67,8 +71,11 @@
     "webpack-dev-server": "^5.2.3"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1039.0",
     "axios": "^1.15.2",
     "electron-updater": "^6.8.3",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.14.2"

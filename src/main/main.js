@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { autoUpdater } = require('electron-updater');
 
 let mainWindow;
@@ -132,4 +133,44 @@ ipcMain.handle('open-external', (_event, url) => {
     return shell.openExternal(url);
   }
   return false;
+});
+
+// Fetch image binary from any URL bypassing renderer CORS — used by the
+// gangsheet builder to grab _qr design images and re-render them on a canvas.
+ipcMain.handle('fetch-image', async (_event, url) => {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  const contentType = res.headers.get('content-type') || 'image/png';
+  return { base64: buf.toString('base64'), contentType };
+});
+
+// Upload the composed gangsheet PDF directly to B2 from the main process using
+// credentials supplied by the renderer (GET /partner/storage-credentials). The
+// hub only persists the resulting public URL afterward.
+ipcMain.handle('s3-upload', async (_event, { credentials, bucket, key, body, contentType }) => {
+  if (!credentials?.access_key_id || !credentials?.secret_access_key) {
+    throw new Error('Missing S3 credentials');
+  }
+  if (!bucket || !key) throw new Error('Missing bucket or key');
+
+  const client = new S3Client({
+    region: credentials.region || 'us-west-004',
+    endpoint: credentials.endpoint,
+    credentials: {
+      accessKeyId: credentials.access_key_id,
+      secretAccessKey: credentials.secret_access_key,
+    },
+    forcePathStyle: false,
+  });
+
+  await client.send(new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    Body: Buffer.from(body), // body is a Uint8Array transferred from renderer
+    ContentType: contentType || 'application/octet-stream',
+    ACL: 'public-read',
+  }));
+
+  return { ok: true, key };
 });
