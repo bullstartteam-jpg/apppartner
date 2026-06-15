@@ -6,6 +6,8 @@ import logo from '../assets/logo.png';
 const navItems = [
   { path: '/',          label: 'Dashboard', icon: '◉' },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦' },
+  { path: '/reprint',   label: 'Reprint', icon: '🔁' },
+  { path: '/reasons',   label: 'Reasons', icon: '🏷' },
 ];
 
 export default function Layout() {

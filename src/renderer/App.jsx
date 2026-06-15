@@ -4,6 +4,8 @@ import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Gangsheet from './pages/Gangsheet';
+import Reprint from './pages/Reprint';
+import Reasons from './pages/Reasons';
 import { DialogHost } from './components/Dialog';
 
 function ProtectedRoute({ children }) {
@@ -48,6 +50,8 @@ export default function App() {
         <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route index element={<Dashboard />} />
           <Route path="gangsheet" element={<Gangsheet />} />
+          <Route path="reprint" element={<Reprint />} />
+          <Route path="reasons" element={<Reasons />} />
         </Route>
       </Routes>
       <DialogHost />
