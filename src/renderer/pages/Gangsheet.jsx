@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import api from '../services/api';
 import {
-  buildGangsheetForChunk, chunkArray, flattenQrMetas, isQrKey,
-  splitOrdersBySideCount, getGangPageFormat, setGangPageFormat,
+  buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey,
+  getGangPageFormat, setGangPageFormat,
 } from '../services/gangsheetBuilder';
 
 // ─────────────────────────────── shared UI ───────────────────────────────
@@ -18,7 +18,6 @@ function TabBtn({ active, onClick, children }) {
   );
 }
 
-// Pill-style sub-tab chip (page-format + category filters). Mirrors bullstart.
 function SubChip({ active, onClick, children }) {
   return (
     <button
@@ -37,30 +36,12 @@ function CountBadge({ n }) {
   return <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-black/10">{n}</span>;
 }
 
-// Per-machine gang page-format selector (persisted in localStorage by the builder).
-function PageFormatSelect() {
-  const [fmt, setFmt] = useState(getGangPageFormat());
-  return (
-    <div>
-      <label className="text-xs text-neutral-500 block">Khổ giấy</label>
-      <select value={fmt} onChange={e => { setFmt(e.target.value); setGangPageFormat(e.target.value); }}
-        className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm">
-        <option value="original">Default (10×7)</option>
-        <option value="letter">Letter 11×8.5</option>
-      </select>
-    </div>
-  );
+// ─────────────────────────────── helpers ───────────────────────────────
+
+function slugifyAccessory(name) {
+  return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
 }
 
-// Category of a gangsheet, parsed from the filename tail after the date token
-// (MMMDD), e.g. "..._JUN06_gloss-300gsm.pdf" → "gloss-300gsm". No suffix → ''.
-function gangCategory(filename) {
-  const m = String(filename || '').match(/_[A-Za-z]{3}\d{2}_(.+)\.pdf$/i);
-  return m ? m[1] : '';
-}
-const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
-
-// An order's material = first item that has one. Mirrors the bullstart bucket rule.
 function orderMaterial(order) {
   for (const it of order.items || []) {
     const id = it.material_id ?? it.material?.id;
@@ -69,10 +50,333 @@ function orderMaterial(order) {
   return { id: 0, name: '' };
 }
 
-// "Scratch Card" → "scratch-card" — filename-safe token.
-function slugifyAccessory(name) {
-  return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
+function orderSideCount(order, includeProduced = false) {
+  let hasFront = false, hasBack = false;
+  for (const it of order.items || []) {
+    for (const m of it.metas || []) {
+      if (m.production && !includeProduced) continue;
+      if (m.key === 'front_qr' || /^front_qr(_\d+)?$/.test(m.key)) hasFront = true;
+      if (m.key === 'back_qr'  || /^back_qr(_\d+)?$/.test(m.key))  hasBack  = true;
+      if (hasFront && hasBack) return 'two';
+    }
+  }
+  return hasFront || hasBack ? 'one' : 'none';
 }
+
+function orderSplitAccessory(order) {
+  let id = 0, name = '';
+  const consider = (acc) => {
+    if (!acc?.id || acc.gangsheet_split === false) return;
+    if (id === 0 || acc.id < id) { id = acc.id; name = acc.name || ''; }
+  };
+  for (const it of order.items || []) {
+    for (const ap of it.accessory_prices || []) consider(ap.accessory);
+    consider(it.accessory_price?.accessory);
+  }
+  return { id, name };
+}
+
+function orderProduct(order) {
+  const counts = {}, names = {};
+  for (const it of order.items || []) {
+    const pid = it.product_variant?.product_id ?? it.product_variant?.product?.id;
+    if (!pid) continue;
+    counts[pid] = (counts[pid] || 0) + 1;
+    names[pid] = it.product_variant?.product?.name || '';
+  }
+  let best = 0, max = -1;
+  for (const [pid, c] of Object.entries(counts)) if (c > max) { max = c; best = Number(pid); }
+  return { id: best, name: names[best] || '' };
+}
+
+function orderOrderType(order) {
+  const counts = {};
+  for (const it of order.items || []) {
+    const ot = it.product_variant?.product?.order_type;
+    if (ot) counts[ot] = (counts[ot] || 0) + 1;
+  }
+  let best = '', max = -1;
+  for (const [ot, c] of Object.entries(counts)) if (c > max) { max = c; best = ot; }
+  return best;
+}
+
+function orderConvertLayout(order, layoutMap) {
+  const ot = orderOrderType(order);
+  return (ot && layoutMap?.[ot]) || 'default';
+}
+
+const NATIVE_SIZES = new Set(['5x5']);
+function normSize(s) {
+  return String(s || '').toLowerCase().replace(/\s+/g, '').replace(/×/g, 'x');
+}
+function orderIsNative(order) {
+  for (const it of order.items || []) {
+    const sz = normSize(it.product_variant?.size);
+    if (sz && NATIVE_SIZES.has(sz)) return true;
+  }
+  return false;
+}
+
+// --- Chip add-on (card skin gang split) ---
+function chipKindOf(text) {
+  const s = String(text || '').toLowerCase();
+  if (/holo/.test(s) || /\bhlg[a-z]*\b/.test(s)) return 'holo';
+  if (/small/.test(s) || /\bsmc\b/.test(s)) return 'smallchip';
+  if (/big/.test(s) || /\bbc\b/.test(s)) return 'bigchip';
+  return '';
+}
+
+function itemAccessoryList(item) {
+  const out = [];
+  const push = (ap) => {
+    if (!ap) return;
+    const name = ap.accessory?.name || '';
+    const style = ap.style || '';
+    const code = ap.accessory_code || '';
+    if (!name && !style && !code) return;
+    const key = `${name}|${style}|${code}`;
+    if (out.some(o => o.key === key)) return;
+    out.push({ key, name, style, code });
+  };
+  for (const ap of item.accessory_prices || []) push(ap);
+  push(item.accessory_price);
+  return out;
+}
+
+function orderChipTag(order) {
+  for (const it of order.items || []) {
+    for (const a of itemAccessoryList(it)) {
+      const kind = chipKindOf(a.style) || chipKindOf(a.code) || chipKindOf(a.name);
+      if (kind) return kind;
+    }
+  }
+  return 'nochip';
+}
+
+// --- Classification dimensions ---
+const GANG_DIMS = [
+  { id: 'product',  label: 'Product' },
+  { id: 'addon',    label: 'Add-on' },
+  { id: 'material', label: 'Material' },
+];
+const DEFAULT_GROUP_BY = ['addon', 'material'];
+
+function loadGroupBy() {
+  try {
+    const v = JSON.parse(localStorage.getItem('gangsheet_group_by'));
+    if (Array.isArray(v)) return new Set(v.filter(x => GANG_DIMS.some(d => d.id === x)));
+  } catch { /* ignore */ }
+  return new Set(DEFAULT_GROUP_BY);
+}
+function saveGroupBy(set) {
+  try { localStorage.setItem('gangsheet_group_by', JSON.stringify([...set])); } catch { /* ignore */ }
+}
+
+function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY), includeProduced = false) {
+  const side = orderSideCount(order, includeProduced) === 'two' ? 'two' : 'one';
+  const keyParts = [side];
+  const labelParts = [side === 'two' ? '2 mặt' : '1 mặt'];
+  const tagParts = [];
+  const info = { side, prod: { id: 0 }, acc: { id: 0 }, mat: { id: 0 } };
+
+  if (groupBy.has('product')) {
+    const p = orderProduct(order); info.prod = p;
+    keyParts.push(`p${p.id}`);
+    labelParts.push(p.id ? (p.name || `SP#${p.id}`) : 'Không product');
+    if (p.id) tagParts.push(slugifyAccessory(p.name));
+  }
+  if (groupBy.has('addon')) {
+    const a = orderSplitAccessory(order); info.acc = a;
+    keyParts.push(`a${a.id}`);
+    labelParts.push(a.id ? (a.name || `Acc#${a.id}`) : 'Không add-on');
+    if (a.id) tagParts.push(slugifyAccessory(a.name));
+  }
+  if (groupBy.has('material')) {
+    const m = orderMaterial(order); info.mat = m;
+    keyParts.push(`m${m.id}`);
+    labelParts.push(m.id ? (m.name || `Mat#${m.id}`) : 'Không chất liệu');
+    if (m.id) tagParts.push(slugifyAccessory(m.name));
+  }
+  if (side === 'two') tagParts.push('two_size');
+
+  return {
+    ...info, side,
+    key: keyParts.join('|'),
+    label: labelParts.join(' · '),
+    tag: tagParts.filter(Boolean).join('_'),
+  };
+}
+
+// --- Shared gang routing ---
+function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includeProduced = false } = {}) {
+  const cardOrders = [];
+  const nativeOrders = [];
+  const normalOrders = [];
+  for (const o of orders) {
+    if (orderConvertLayout(o, layoutMap) === 'outside') cardOrders.push(o);
+    else if (orderIsNative(o)) nativeOrders.push(o);
+    else normalOrders.push(o);
+  }
+
+  const chunks = [];
+
+  // Native (e.g. 5x5): merged gang keeping each design's own size.
+  const nativeGroups = new Map();
+  for (const o of nativeOrders) {
+    let sz = '';
+    for (const it of o.items || []) {
+      const s = normSize(it.product_variant?.size);
+      if (s && NATIVE_SIZES.has(s)) { sz = s; break; }
+    }
+    if (!nativeGroups.has(sz)) nativeGroups.set(sz, []);
+    nativeGroups.get(sz).push(o);
+  }
+  for (const [sz, ords] of nativeGroups) {
+    for (const chunk of chunkArray(ords, batchSize)) {
+      chunks.push({ chunk, suffix: sz || 'native', tiled: false, native: true });
+    }
+  }
+
+  // Normal: group by the chosen dimensions (+ side), chunk by batchSize.
+  const bucketGroups = new Map();
+  for (const o of normalOrders) {
+    const b = orderBucketInfo(o, groupBy, includeProduced);
+    if (!bucketGroups.has(b.key)) bucketGroups.set(b.key, { tag: b.tag, orders: [] });
+    bucketGroups.get(b.key).orders.push(o);
+  }
+  for (const [, g] of bucketGroups) {
+    for (const chunk of chunkArray(g.orders, batchSize)) {
+      chunks.push({ chunk, suffix: g.tag, tiled: false });
+    }
+  }
+
+  // Card skin: gom theo order_type × chip, 3 orders/chunk.
+  const cardGroups = new Map();
+  for (const o of cardOrders) {
+    const ot = orderOrderType(o) || 'skincard';
+    const chip = orderChipTag(o);
+    const key = `${ot}||${chip}`;
+    if (!cardGroups.has(key)) cardGroups.set(key, { ot, chip, orders: [] });
+    cardGroups.get(key).orders.push(o);
+  }
+  for (const [, g] of cardGroups) {
+    const tag = `${slugifyAccessory(g.ot) || 'skincard'}_${g.chip}`;
+    for (const chunk of chunkArray(g.orders, 3)) {
+      chunks.push({ chunk, suffix: tag, tiled: true });
+    }
+  }
+
+  return chunks;
+}
+
+function chunkPageFormat({ tiled, native }) {
+  return tiled ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
+}
+
+function buildChunkPdf({ chunk, suffix, tiled, native }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
+  const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, collectPages, onProgress };
+  return tiled
+    ? buildTiledGangsheet(chunk, opts)
+    : buildGangsheetForChunk(chunk, { ...opts, pageFormat: chunkPageFormat({ tiled, native }) });
+}
+
+// --- PNG export ---
+
+function pngNameForPage(pdfFilename, pageIndex) {
+  const base = String(pdfFilename || 'gangsheet').replace(/\.pdf$/i, '');
+  return `${base}_p${String(pageIndex + 1).padStart(2, '0')}.png`;
+}
+
+async function uploadGangPngs(pageBlobs, { creds, pdfFilename, onProgress }) {
+  const urls = [];
+  for (let i = 0; i < pageBlobs.length; i++) {
+    const name = pngNameForPage(pdfFilename, i);
+    const key = `${creds.folder}/${name}`;
+    const bytes = new Uint8Array(await pageBlobs[i].arrayBuffer());
+    await window.electronAPI.s3Upload({
+      credentials: creds,
+      bucket: creds.bucket,
+      key,
+      body: bytes,
+      contentType: 'image/png',
+    });
+    urls.push(`${creds.public_url_base}/${key}`);
+    onProgress?.({ pngDone: i + 1, pngTotal: pageBlobs.length });
+  }
+  return urls;
+}
+
+function openGangPngs(g) {
+  for (const url of g?.png_urls || []) {
+    if (window.electronAPI?.openExternal) window.electronAPI.openExternal(url);
+    else window.open(url, '_blank');
+  }
+}
+
+function loadExportPng() {
+  try { return localStorage.getItem('gangsheet_export_png') === '1'; } catch { return false; }
+}
+function saveExportPng(v) {
+  try { localStorage.setItem('gangsheet_export_png', v ? '1' : '0'); } catch { /* noop */ }
+}
+
+// --- Product filters ---
+const PF_KEYS = [
+  'product_id', 'line_id', 'product_variant_id', 'sku', 'color', 'size',
+  'paper_type', 'material_id', 'accessory_id', 'accessory_code',
+];
+const PF_DEFAULTS = Object.fromEntries(PF_KEYS.map(k => [k, '']));
+const hasActivePf = (pf) => PF_KEYS.some(k => pf[k]);
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(v => v != null && String(v).trim() !== ''))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function itemAccessoryIds(item) {
+  const ids = new Set();
+  for (const ap of item.accessory_prices || []) {
+    const id = ap.accessory_id ?? ap.accessory?.id;
+    if (id) ids.add(String(id));
+  }
+  const legacy = item.accessory_price?.accessory_id ?? item.accessory_price?.accessory?.id;
+  if (legacy) ids.add(String(legacy));
+  return ids;
+}
+
+function itemAccessoryCodes(item) {
+  const codes = new Set();
+  for (const ap of item.accessory_prices || []) {
+    if (ap.accessory_code) codes.add(String(ap.accessory_code).trim().toUpperCase());
+  }
+  const legacy = item.accessory_price?.accessory_code;
+  if (legacy) codes.add(String(legacy).trim().toUpperCase());
+  return codes;
+}
+
+function orderMatchesProductFilters(order, pf) {
+  if (!hasActivePf(pf)) return true;
+  const items = order.items || [];
+  const some = (fn) => items.some(fn);
+  const eq = (a, b) => a != null && String(a) === String(b);
+
+  if (pf.product_id && !some(it => eq(it.product_variant?.product_id ?? it.product_variant?.product?.id, pf.product_id))) return false;
+  if (pf.line_id && !some(it => eq(it.product_variant?.product?.line_id, pf.line_id))) return false;
+  if (pf.product_variant_id && !some(it => eq(it.product_variant_id ?? it.product_variant?.id, pf.product_variant_id))) return false;
+  if (pf.sku && !some(it => eq(it.product_variant?.sku, pf.sku))) return false;
+  for (const f of ['color', 'size', 'paper_type']) {
+    if (pf[f] && !some(it => eq(it.product_variant?.[f], pf[f]))) return false;
+  }
+  if (pf.material_id && !some(it => eq(it.material_id ?? it.material?.id, pf.material_id))) return false;
+  if (pf.accessory_id && !some(it => itemAccessoryIds(it).has(String(pf.accessory_id)))) return false;
+  if (pf.accessory_code) {
+    const code = String(pf.accessory_code).trim().toUpperCase();
+    if (!some(it => itemAccessoryCodes(it).has(code))) return false;
+  }
+  return true;
+}
+
+// --- Misc helpers ---
 
 function dominantLineId(orders) {
   const counts = {};
@@ -85,7 +389,6 @@ function dominantLineId(orders) {
   return best;
 }
 
-// Count all _qr metas of an order (includeProduced — partner orders are produced).
 function countQrMetas(order) {
   let n = 0;
   for (const it of order.items || []) for (const m of it.metas || [])
@@ -93,12 +396,37 @@ function countQrMetas(order) {
   return n;
 }
 
+// Category of a gangsheet, parsed from filename tail after date token.
+function gangCategory(filename) {
+  const m = String(filename || '').match(/_[A-Za-z]{3}\d{2}_(.+)\.pdf$/i);
+  return m ? m[1] : '';
+}
+const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
+
+function PageFormatSelect() {
+  const [fmt, setFmt] = useState(getGangPageFormat());
+  return (
+    <div>
+      <label className="text-xs text-neutral-500 block">Khổ gang</label>
+      <select
+        value={fmt}
+        onChange={e => { setFmt(e.target.value); setGangPageFormat(e.target.value); }}
+        className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm"
+      >
+        <option value="original">Default (10×7)</option>
+        <option value="letter">Letter 11×8.5</option>
+      </select>
+    </div>
+  );
+}
+
+function loadDefaultBatch() {
+  const v = parseInt(localStorage.getItem('gangsheet_batch_size'), 10);
+  return v > 0 ? v : 10;
+}
+
 // ─────────────────────────────── page shell ───────────────────────────────
 
-// Partner gangsheet workspace. The partner is a print shop: they re-gang and
-// reconvert the orders that sit inside the gangsheets an admin assigned to them
-// (GET /partner/orders is scoped to those order ids), and review the assigned
-// gangs. They never reach orders that aren't theirs.
 export default function Gangsheet() {
   const [tab, setTab] = useState('compose');
   return (
@@ -123,20 +451,93 @@ export default function Gangsheet() {
 
 // ─────────────────────────────── Compose ───────────────────────────────
 
-// Re-gang the partner's assigned orders into a fresh PDF, upload to B2, and
-// record it (auto-assigned back to this partner). includeProduced=true because
-// these orders were already produced by the admin when first ganged.
 function ComposeTab() {
   const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [batchSize, setBatchSize] = useState(() => {
-    const v = parseInt(localStorage.getItem('gangsheet_batch_size'), 10);
-    return Number.isFinite(v) && v > 0 ? v : 10;
-  });
+  const [batchSize, setBatchSize] = useState(loadDefaultBatch);
+  const [batchSaved, setBatchSaved] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [results, setResults] = useState([]);
+  // Sub-tab filter: 'all' | a bucket key.
+  const [subTab, setSubTab] = useState('all');
+  // Export PNG per page alongside the PDF.
+  const [exportPng, setExportPng] = useState(loadExportPng);
+  // Classification dimensions (multi-select).
+  const [groupBy, setGroupBy] = useState(loadGroupBy);
+  const toggleGroupBy = (dim) => setGroupBy(prev => {
+    const next = new Set(prev);
+    next.has(dim) ? next.delete(dim) : next.add(dim);
+    saveGroupBy(next);
+    setSubTab('all');
+    return next;
+  });
+  // Product filters (client-side).
+  const [pf, setPf] = useState(PF_DEFAULTS);
+  const [catalogProducts, setCatalogProducts] = useState([]);
+  const [catalogVariants, setCatalogVariants] = useState([]);
+  const [catalogMaterials, setCatalogMaterials] = useState([]);
+  const [catalogAccessories, setCatalogAccessories] = useState([]);
+  const patchPf = (patch) => { setPf(p => ({ ...p, ...patch })); setSubTab('all'); };
+  // Partner phân chia: gang tạo trong lần này sẽ tự gán cho các partner đã chọn
+  // (PUT /gangsheets/{id}/partners) nên partner thấy đơn trong partner-bullstart.
+  // Rỗng = không phân chia.
+  const [partnerUsers, setPartnerUsers] = useState([]);
+  const [selectedPartners, setSelectedPartners] = useState(new Set());
+  // order_type → convert layout map.
+  const [layoutMap, setLayoutMap] = useState({});
+
+  useEffect(() => {
+    api.get('/gangsheets/partner-users')
+      .then(res => setPartnerUsers(res.data || []))
+      .catch(() => {});
+    api.get('/settings/convert-layouts')
+      .then(res => setLayoutMap(res.data?.map || {}))
+      .catch(() => {});
+    api.get('/products', { params: { status: 1, per_page: 100 } })
+      .then(res => setCatalogProducts(res.data?.data || []))
+      .catch(() => {});
+  }, []);
+
+  // Variant / material / accessory options for selected product.
+  useEffect(() => {
+    const pid = pf.product_id;
+    if (!pid) {
+      setCatalogVariants([]); setCatalogMaterials([]); setCatalogAccessories([]);
+      return;
+    }
+    Promise.all([
+      api.get('/variants', { params: { product_id: pid, status: 1 } }),
+      api.get(`/products/${pid}/materials`),
+      api.get('/accessories', { params: { product_id: pid } }),
+    ]).then(([vRes, mRes, aRes]) => {
+      const variants = vRes.data?.data ?? vRes.data ?? [];
+      setCatalogVariants(Array.isArray(variants) ? variants : []);
+      setCatalogMaterials(Array.isArray(mRes.data) ? mRes.data : (mRes.data?.data || []));
+      setCatalogAccessories(Array.isArray(aRes.data) ? aRes.data : (aRes.data?.data || []));
+    }).catch(() => {
+      setCatalogVariants([]); setCatalogMaterials([]); setCatalogAccessories([]);
+    });
+  }, [pf.product_id]);
+
+  const catalogLineIds = uniqueSorted(catalogProducts.map(p => p.line_id));
+  const catalogColors = uniqueSorted(catalogVariants.map(v => v.color));
+  const catalogSizes = uniqueSorted(catalogVariants.map(v => v.size));
+  const catalogPaperTypes = uniqueSorted(catalogVariants.map(v => v.paper_type));
+  const catalogSkus = uniqueSorted(catalogVariants.map(v => v.sku));
+  const selectedAccessory = pf.accessory_id
+    ? catalogAccessories.find(a => String(a.id) === String(pf.accessory_id))
+    : null;
+  const catalogAccessoryCodes = uniqueSorted(
+    (selectedAccessory?.prices ?? []).map(p => p.accessory_code).filter(Boolean)
+  );
+
+  const togglePartner = (id) => setSelectedPartners(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const fetchOrders = async () => {
     setLoading(true);
@@ -154,10 +555,38 @@ function ComposeTab() {
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
+
+  // Buckets built from visible (product-filtered) orders.
+  const visibleOrders = hasActivePf(pf) ? orders.filter(o => orderMatchesProductFilters(o, pf)) : orders;
+
+  const buckets = (() => {
+    const map = new Map();
+    for (const o of visibleOrders) {
+      const b = orderBucketInfo(o, groupBy, true);
+      if (!map.has(b.key)) map.set(b.key, { label: b.label, side: b.side, tag: b.tag, orders: [] });
+      map.get(b.key).orders.push(o);
+    }
+    return map;
+  })();
+  const bucketList = [...buckets.entries()]
+    .map(([key, v]) => ({ key, ...v }))
+    .sort((a, b) => (a.side === b.side ? b.orders.length - a.orders.length : (a.side === 'one' ? -1 : 1)));
+
+  const filteredOrders = subTab === 'all' ? visibleOrders : (buckets.get(subTab)?.orders || []);
+
   const toggleAll = () => {
-    if (selectedIds.size === orders.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(orders.map(o => o.id)));
+    const visibleIds = new Set(filteredOrders.map(o => o.id));
+    const allSelected = filteredOrders.length > 0 && filteredOrders.every(o => selectedIds.has(o.id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (allSelected) visibleIds.forEach(id => next.delete(id));
+      else visibleIds.forEach(id => next.add(id));
+      return next;
+    });
   };
+
+  const countItemQrMetas = (item) =>
+    (item.metas || []).filter(m => isQrKey(m.key)).length;
 
   const handleGenerate = async () => {
     const selected = orders.filter(o => selectedIds.has(o.id));
@@ -167,21 +596,8 @@ function ComposeTab() {
       return;
     }
 
-    // Split by material first (never mix paper stock), then by side count.
-    const matGroups = new Map();   // matId → { name, orders[] }
-    for (const o of selected) {
-      const m = orderMaterial(o);
-      if (!matGroups.has(m.id)) matGroups.set(m.id, { name: m.name, orders: [] });
-      matGroups.get(m.id).orders.push(o);
-    }
-    const joinTags = (...xs) => xs.filter(Boolean).join('_');
-    const chunks = [];
-    for (const [matId, { name, orders: matOrders }] of matGroups) {
-      const matTag = matId ? slugifyAccessory(name) : '';
-      const { oneSide, twoSide } = splitOrdersBySideCount(matOrders, { includeProduced: true });
-      for (const chunk of chunkArray(oneSide, batchSize)) chunks.push({ chunk, suffix: joinTags(matTag, '') });
-      for (const chunk of chunkArray(twoSide, batchSize)) chunks.push({ chunk, suffix: joinTags(matTag, 'two_size') });
-    }
+    // Route + chunk with the same 3-branch flow as bullstart-app.
+    const chunks = routeOrdersToChunks(selected, { layoutMap, groupBy, batchSize, includeProduced: true });
 
     setRunning(true); setResults([]);
     const out = [];
@@ -190,20 +606,27 @@ function ComposeTab() {
       const creds = credsRes.data;
 
       for (let ci = 0; ci < chunks.length; ci++) {
-        const { chunk, suffix } = chunks[ci];
+        const { chunk } = chunks[ci];
         const linePrefix = dominantLineId(chunk);
         const totalInChunk = flattenQrMetas(chunk, { includeProduced: true }).length;
         setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
 
-        const built = await buildGangsheetForChunk(chunk, {
-          linePrefix,
-          includeProduced: true,
-          nameSuffix: suffix,
-          seq: ci + 1,
-          pageFormat: getGangPageFormat(),
+        const pageFormat = chunkPageFormat(chunks[ci]);
+        const built = await buildChunkPdf(chunks[ci], {
+          linePrefix, seq: ci + 1, includeProduced: true, collectPages: exportPng,
           onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
         });
 
+        // 0) PNG export (when ticked): upload each page as a separate .png.
+        let pngUrls = null;
+        if (exportPng && built.pageBlobs?.length) {
+          pngUrls = await uploadGangPngs(built.pageBlobs, {
+            creds, pdfFilename: built.filename,
+            onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+          });
+        }
+
+        // 1) Upload PDF to B2.
         const key = `${creds.folder}/${built.filename}`;
         const arrayBuffer = await built.blob.arrayBuffer();
         const bytes = new Uint8Array(arrayBuffer);
@@ -216,11 +639,13 @@ function ComposeTab() {
         });
         const publicUrl = `${creds.public_url_base}/${key}`;
 
+        // 2) Record on hub (auto-assigned back to this partner).
         const res = await api.post('/partner/gangsheets', {
           filename: built.filename,
           file_url: publicUrl,
+          png_urls: pngUrls,
           line_id: linePrefix || '',
-          page_format: getGangPageFormat(),
+          page_format: pageFormat,
           first_system_id: built.firstSid,
           last_system_id: built.lastSid,
           orders_count: built.ordersInChunk,
@@ -228,9 +653,21 @@ function ComposeTab() {
           order_ids: built.orderIds,
           meta_ids: built.metaIds,
         });
-        out.push(res.data.gangsheet);
+        const created = res.data.gangsheet;
+        // 3) Phân chia: gán gang vừa tạo cho các partner đã chọn (nếu có).
+        if (selectedPartners.size > 0 && created?.id) {
+          try {
+            await api.put(`/gangsheets/${created.id}/partners`, { user_ids: [...selectedPartners] });
+            created.partners = partnerUsers.filter(u => selectedPartners.has(u.id));
+          } catch (e) {
+            console.error('[gangsheet] partner assign failed', e);
+          }
+        }
+        out.push(created);
       }
       setResults(out);
+      setSelectedIds(new Set());
+      await fetchOrders();
     } catch (err) {
       const detail = err?.response?.data?.message || err?.message || 'Tạo gangsheet thất bại';
       const status = err?.response?.status ? ` [HTTP ${err.response.status}]` : '';
@@ -247,7 +684,9 @@ function ComposeTab() {
       <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
         <div className="flex justify-between items-end gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-neutral-700">Đơn được giao ({orders.length})</h3>
+            <h3 className="text-sm font-semibold text-neutral-700">
+              Đơn được giao ({visibleOrders.length}{hasActivePf(pf) ? ` / ${orders.length}` : ''})
+            </h3>
             <p className="text-xs text-neutral-500">Các đơn nằm trong gangsheet admin đã chia cho bạn. Gom thành PDF mới để in.</p>
           </div>
           <div className="flex gap-2 items-end">
@@ -255,14 +694,22 @@ function ComposeTab() {
               <label className="text-xs text-neutral-500 block">Đơn / batch</label>
               <div className="mt-1 flex items-center gap-1">
                 <input type="number" min="1" value={batchSize}
-                  onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+                  onChange={e => { setBatchSize(Math.max(1, parseInt(e.target.value) || 1)); setBatchSaved(false); }}
                   className="w-20 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
                 <button type="button"
-                  onClick={() => localStorage.setItem('gangsheet_batch_size', String(batchSize))}
-                  className="px-2 py-1.5 text-xs rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700">Lưu</button>
+                  onClick={() => { localStorage.setItem('gangsheet_batch_size', String(batchSize)); setBatchSaved(true); }}
+                  className="px-2 py-1.5 text-xs rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700">
+                  {batchSaved ? '✓ Đã lưu' : 'Lưu'}
+                </button>
               </div>
             </div>
             <PageFormatSelect />
+            <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer select-none pb-2" title="Xuất thêm mỗi trang gang thành 1 file .png lên B2">
+              <input type="checkbox" checked={exportPng}
+                onChange={e => { setExportPng(e.target.checked); saveExportPng(e.target.checked); }}
+                className="accent-orange-500" />
+              Xuất PNG
+            </label>
             <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
               className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
               {running ? 'Đang tạo…' : `Tạo gang (${selectedIds.size})`}
@@ -271,36 +718,195 @@ function ComposeTab() {
           </div>
         </div>
 
+        {/* Classification dimension toggles */}
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-xs text-neutral-500 mr-1">Phân loại theo:</span>
+          {GANG_DIMS.map(d => (
+            <SubChip key={d.id} active={groupBy.has(d.id)} onClick={() => toggleGroupBy(d.id)}>{d.label}</SubChip>
+          ))}
+          <span className="text-[11px] text-neutral-400 ml-1">· 1/2 mặt luôn tách</span>
+        </div>
+
+        {/* Product filters */}
+        <div className="flex flex-wrap items-center gap-2 bg-[#faf8f6]/60 border border-neutral-200 rounded-xl px-3 py-2">
+          <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wide shrink-0">Sản phẩm</span>
+
+          <select value={pf.product_id}
+            onChange={e => {
+              const product_id = e.target.value;
+              const product = catalogProducts.find(p => String(p.id) === product_id);
+              patchPf({
+                product_id,
+                line_id: product?.line_id || (product_id ? pf.line_id : ''),
+                product_variant_id: '', sku: '', color: '', size: '', paper_type: '',
+                material_id: '', accessory_id: '', accessory_code: '',
+              });
+            }}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[200px]"
+          >
+            <option value="">Tất cả sản phẩm</option>
+            {catalogProducts.map(p => (
+              <option key={p.id} value={p.id}>{p.name}{p.line_id ? ` (${p.line_id})` : ''}</option>
+            ))}
+          </select>
+
+          <select value={pf.line_id} onChange={e => patchPf({ line_id: e.target.value })}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 font-mono">
+            <option value="">Line ID</option>
+            {catalogLineIds.map(lid => <option key={lid} value={lid}>{lid}</option>)}
+          </select>
+
+          <select value={pf.product_variant_id} onChange={e => patchPf({ product_variant_id: e.target.value })} disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[180px] disabled:opacity-50">
+            <option value="">Variant</option>
+            {catalogVariants.map(v => (
+              <option key={v.id} value={v.id}>{v.sku || `#${v.id}`}{v.color || v.size ? ` — ${[v.color, v.size].filter(Boolean).join('/')}` : ''}</option>
+            ))}
+          </select>
+
+          <select value={pf.sku} onChange={e => patchPf({ sku: e.target.value })} disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 font-mono disabled:opacity-50">
+            <option value="">SKU</option>
+            {catalogSkus.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+
+          <select value={pf.color} onChange={e => patchPf({ color: e.target.value })} disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 disabled:opacity-50">
+            <option value="">Màu</option>
+            {catalogColors.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+
+          <select value={pf.size} onChange={e => patchPf({ size: e.target.value })} disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 disabled:opacity-50">
+            <option value="">Size</option>
+            {catalogSizes.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+
+          <select value={pf.paper_type} onChange={e => patchPf({ paper_type: e.target.value })} disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-32 disabled:opacity-50">
+            <option value="">Giấy</option>
+            {catalogPaperTypes.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+
+          <select value={pf.material_id} onChange={e => patchPf({ material_id: e.target.value })} disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[140px] disabled:opacity-50">
+            <option value="">Material</option>
+            {catalogMaterials.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+
+          <select value={pf.accessory_id} onChange={e => patchPf({ accessory_id: e.target.value, accessory_code: '' })} disabled={!pf.product_id}
+            className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[140px] disabled:opacity-50">
+            <option value="">Accessory</option>
+            {catalogAccessories.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+
+          {catalogAccessoryCodes.length > 0 && (
+            <select value={pf.accessory_code} onChange={e => patchPf({ accessory_code: e.target.value })}
+              className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[120px]">
+              <option value="">Code</option>
+              {catalogAccessoryCodes.map(code => <option key={code} value={code}>{code}</option>)}
+            </select>
+          )}
+
+          {hasActivePf(pf) && (
+            <button type="button" onClick={() => patchPf(PF_DEFAULTS)}
+              className="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-500">
+              ✕ Clear
+            </button>
+          )}
+        </div>
+
+        {/* Phân chia cho partner: gang tạo ra trong lần Generate này sẽ tự gán
+            cho các partner chọn ở đây (họ thấy đơn trong app partner-bullstart). */}
+        {partnerUsers.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-xs text-neutral-500 mr-1">Phân chia cho partner:</span>
+            {partnerUsers.map(u => (
+              <SubChip key={u.id} active={selectedPartners.has(u.id)} onClick={() => togglePartner(u.id)}>{u.name}</SubChip>
+            ))}
+            {selectedPartners.size > 0 && (
+              <button onClick={() => setSelectedPartners(new Set())} className="text-xs text-neutral-400 hover:text-neutral-600 ml-1">× bỏ chọn</button>
+            )}
+          </div>
+        )}
+
+        {/* Bucket sub-tabs */}
+        <div className="flex flex-wrap items-center gap-1 border-b border-neutral-100 pb-2">
+          <SubChip active={subTab === 'all'} onClick={() => setSubTab('all')}>All <CountBadge n={visibleOrders.length} /></SubChip>
+          {bucketList.map(b => (
+            <SubChip key={b.key} active={subTab === b.key} onClick={() => setSubTab(b.key)}>
+              {b.label} <CountBadge n={b.orders.length} />
+            </SubChip>
+          ))}
+        </div>
+
         {loading ? (
           <p className="text-neutral-400 text-sm">Loading…</p>
-        ) : orders.length === 0 ? (
-          <p className="text-neutral-400 text-sm">Chưa có đơn nào được giao cho bạn.</p>
+        ) : filteredOrders.length === 0 ? (
+          <p className="text-neutral-400 text-sm">
+            {subTab === 'all' ? 'Chưa có đơn nào được giao cho bạn.' : 'Không có đơn nào trong nhóm này.'}
+          </p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-neutral-500 text-xs border-b border-neutral-200">
                 <th className="py-2 text-left w-8"><input type="checkbox" onChange={toggleAll}
-                  checked={selectedIds.size === orders.length && orders.length > 0} className="accent-orange-500" /></th>
+                  checked={filteredOrders.length > 0 && filteredOrders.every(o => selectedIds.has(o.id))} className="accent-orange-500" /></th>
                 <th className="py-2 text-left">System ID</th>
                 <th className="py-2 text-left">Ref</th>
                 <th className="py-2 text-left">Line</th>
-                <th className="py-2 text-right">_qr metas</th>
+                <th className="py-2 text-left">SKU</th>
+                <th className="py-2 text-left">Accessory</th>
+                <th className="py-2 text-left">Code</th>
+                <th className="py-2 text-right">_qr</th>
               </tr>
             </thead>
-            <tbody>
-              {orders.map(o => {
-                const li = o.items?.[0]?.product_variant?.product?.line_id;
-                return (
-                  <tr key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
-                    <td className="py-1.5"><input type="checkbox" checked={selectedIds.has(o.id)} onChange={() => toggle(o.id)} className="accent-orange-500" /></td>
-                    <td className="py-1.5 font-mono text-orange-500 text-xs">{o.system_id}</td>
-                    <td className="py-1.5 text-xs text-neutral-600">{o.ref_id || '-'}</td>
-                    <td className="py-1.5 text-xs text-neutral-600 font-mono">{li || '-'}</td>
-                    <td className="py-1.5 text-right text-neutral-700">{countQrMetas(o)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
+            {filteredOrders.map(o => {
+              const items = o.items?.length ? o.items : [null];
+              return (
+                <tbody key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
+                  {items.map((it, idx) => {
+                    const accs = it ? itemAccessoryList(it) : [];
+                    const v = it?.product_variant;
+                    return (
+                      <tr key={it ? `${o.id}-${it.id}` : o.id} className={idx > 0 ? 'text-neutral-600' : ''}>
+                        {idx === 0 && (
+                          <>
+                            <td className="py-1.5 align-top" rowSpan={items.length}>
+                              <input type="checkbox" checked={selectedIds.has(o.id)} onChange={() => toggle(o.id)} className="accent-orange-500" />
+                            </td>
+                            <td className="py-1.5 align-top font-mono text-orange-500 text-xs" rowSpan={items.length}>{o.system_id}</td>
+                            <td className="py-1.5 align-top text-xs text-neutral-600" rowSpan={items.length}>{o.ref_id || '-'}</td>
+                          </>
+                        )}
+                        <td className="py-1.5 text-xs text-neutral-600 font-mono">{v?.product?.line_id || '-'}</td>
+                        <td className="py-1.5 text-xs text-neutral-600 font-mono">
+                          {v?.sku || '-'}
+                          {(v?.color || v?.size) && (
+                            <span className="text-neutral-400"> {[v.color, v.size].filter(Boolean).join('/')}</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 text-xs text-neutral-600">
+                          {accs.length === 0 ? <span className="text-neutral-300">-</span> : accs.map(a => (
+                            <div key={a.key}>
+                              {a.style || a.name || '-'}
+                              {a.style && a.name && <span className="text-neutral-400"> · {a.name}</span>}
+                            </div>
+                          ))}
+                        </td>
+                        <td className="py-1.5 text-xs font-mono text-neutral-700">
+                          {accs.length === 0 ? <span className="text-neutral-300">-</span>
+                            : accs.map(a => <div key={a.key}>{a.code || <span className="text-neutral-300">-</span>}</div>)}
+                        </td>
+                        <td className={`py-1.5 text-right ${it && countItemQrMetas(it) ? 'text-neutral-700' : 'text-neutral-300'}`}>
+                          {it ? countItemQrMetas(it) : 0}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              );
+            })}
           </table>
         )}
       </div>
@@ -327,8 +933,17 @@ function ComposeTab() {
             {results.map(g => (
               <li key={g.id} className="flex justify-between gap-3">
                 <span className="font-mono text-neutral-700 truncate">{g.filename}</span>
-                <button onClick={() => (window.electronAPI?.openExternal ? window.electronAPI.openExternal(g.file_url) : window.open(g.file_url, '_blank'))}
-                  className="text-orange-500 text-xs">Download</button>
+                <span className="flex gap-3 shrink-0">
+                  {g.png_urls?.length > 0 && (
+                    <button type="button" onClick={() => openGangPngs(g)}
+                      className="text-emerald-600 hover:text-emerald-700 text-xs"
+                      title={`Mở ${g.png_urls.length} file PNG của gang này`}>
+                      Open PNG ({g.png_urls.length})
+                    </button>
+                  )}
+                  <button onClick={() => (window.electronAPI?.openExternal ? window.electronAPI.openExternal(g.file_url) : window.open(g.file_url, '_blank'))}
+                    className="text-orange-500 text-xs">Download</button>
+                </span>
               </li>
             ))}
           </ul>
@@ -340,9 +955,6 @@ function ComposeTab() {
 
 // ─────────────────────────────── Reconvert ───────────────────────────────
 
-// Wipe the _qr metas of the partner's chosen orders so the converter cron
-// rebuilds them from the mockup URLs (fixes wrong/blurry designs). Scoped
-// server-side to the partner's assigned orders.
 function ReconvertTab() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -444,14 +1056,11 @@ function ReconvertTab() {
 
 // ─────────────────────────────── Manage (assigned list) ───────────────────────────────
 
-// Read-only list of the gangs an admin assigned to this partner (scoped
-// server-side). Filter by date / line / page-format + category chips, mark "đã in".
 function ManageTab() {
   const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
-  // Category sub-tab (client-side, on the current page). 'all' = no filter.
   const [subTab, setSubTab] = useState('all');
 
   const fetchList = () => {
@@ -467,7 +1076,6 @@ function ManageTab() {
   };
   useEffect(() => { fetchList(); }, [filters.page, filters.page_format]);
 
-  // Category chips + filtered rows (client-side, on the current page).
   const catCounts = {};
   for (const g of list.data) {
     const c = gangCategory(g.filename);
@@ -486,7 +1094,6 @@ function ManageTab() {
 
   const togglePrinted = async (g) => {
     const printed = !g.pivot?.printed_at;
-    // optimistic update
     setList(prev => ({
       ...prev,
       data: prev.data.map(x => x.id === g.id
@@ -496,13 +1103,12 @@ function ManageTab() {
     try {
       await api.post(`/partner/gangsheets/${g.id}/printed`, { printed });
     } catch {
-      fetchList(); // revert on error
+      fetchList();
     }
   };
 
   return (
     <div className="space-y-4">
-      {/* Filters */}
       <form onSubmit={applyFilters} className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm flex flex-wrap gap-3 items-end">
         <div>
           <label className="text-xs text-neutral-500 block">From</label>
@@ -524,7 +1130,6 @@ function ManageTab() {
         <span className="text-xs text-neutral-500 ml-auto">Total: {list.total ?? 0}</span>
       </form>
 
-      {/* Size sub-tabs (server-side filter by page_format). */}
       <div className="flex flex-wrap items-center gap-1">
         <span className="text-xs text-neutral-500 mr-1">Khổ:</span>
         <SubChip active={filters.page_format === ''} onClick={() => setFilters(f => ({ ...f, page_format: '', page: 1 }))}>Tất cả</SubChip>
@@ -532,7 +1137,6 @@ function ManageTab() {
         <SubChip active={filters.page_format === 'letter'} onClick={() => setFilters(f => ({ ...f, page_format: 'letter', page: 1 }))}>Letter 11×8.5</SubChip>
       </div>
 
-      {/* Category chips (parsed from filename) — easy to tell batches apart. */}
       {!loading && list.data.length > 0 && (
         <div className="flex flex-wrap items-center gap-1">
           <SubChip active={subTab === 'all'} onClick={() => setSubTab('all')}>All <CountBadge n={list.data.length} /></SubChip>
@@ -544,7 +1148,6 @@ function ManageTab() {
         </div>
       )}
 
-      {/* Table */}
       <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -592,7 +1195,6 @@ function ManageTab() {
         </table>
       </div>
 
-      {/* Pagination */}
       {list.last_page > 1 && (
         <div className="flex justify-between items-center text-xs text-neutral-500">
           <span>Page {list.current_page} / {list.last_page} • {list.total} gangsheet(s)</span>
