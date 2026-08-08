@@ -3,6 +3,7 @@ import api from '../services/api';
 import {
   buildGangsheetForChunk, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey,
   getGangPageFormat, setGangPageFormat,
+  rasterizeGangPdf, fetchFileBytes,
 } from '../services/gangsheetBuilder';
 
 // ─────────────────────────────── shared UI ───────────────────────────────
@@ -175,26 +176,26 @@ function saveGroupBy(set) {
 function orderBucketInfo(order, groupBy = new Set(DEFAULT_GROUP_BY), includeProduced = false) {
   const side = orderSideCount(order, includeProduced) === 'two' ? 'two' : 'one';
   const keyParts = [side];
-  const labelParts = [side === 'two' ? '2 mặt' : '1 mặt'];
+  const labelParts = [side === 'two' ? '2 sides' : '1 side'];
   const tagParts = [];
   const info = { side, prod: { id: 0 }, acc: { id: 0 }, mat: { id: 0 } };
 
   if (groupBy.has('product')) {
     const p = orderProduct(order); info.prod = p;
     keyParts.push(`p${p.id}`);
-    labelParts.push(p.id ? (p.name || `SP#${p.id}`) : 'Không product');
+    labelParts.push(p.id ? (p.name || `SP#${p.id}`) : 'No product');
     if (p.id) tagParts.push(slugifyAccessory(p.name));
   }
   if (groupBy.has('addon')) {
     const a = orderSplitAccessory(order); info.acc = a;
     keyParts.push(`a${a.id}`);
-    labelParts.push(a.id ? (a.name || `Acc#${a.id}`) : 'Không add-on');
+    labelParts.push(a.id ? (a.name || `Acc#${a.id}`) : 'No add-on');
     if (a.id) tagParts.push(slugifyAccessory(a.name));
   }
   if (groupBy.has('material')) {
     const m = orderMaterial(order); info.mat = m;
     keyParts.push(`m${m.id}`);
-    labelParts.push(m.id ? (m.name || `Mat#${m.id}`) : 'Không chất liệu');
+    labelParts.push(m.id ? (m.name || `Mat#${m.id}`) : 'No material');
     if (m.id) tagParts.push(slugifyAccessory(m.name));
   }
   if (side === 'two') tagParts.push('two_size');
@@ -401,13 +402,13 @@ function gangCategory(filename) {
   const m = String(filename || '').match(/_[A-Za-z]{3}\d{2}_(.+)\.pdf$/i);
   return m ? m[1] : '';
 }
-const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Khác';
+const gangCategoryLabel = (cat) => cat ? cat.replace(/_/g, ' · ') : 'Other';
 
 function PageFormatSelect() {
   const [fmt, setFmt] = useState(getGangPageFormat());
   return (
     <div>
-      <label className="text-xs text-neutral-500 block">Khổ gang</label>
+      <label className="text-xs text-neutral-500 block">Page format</label>
       <select
         value={fmt}
         onChange={e => { setFmt(e.target.value); setGangPageFormat(e.target.value); }}
@@ -433,13 +434,13 @@ export default function Gangsheet() {
     <div className="p-6 space-y-4">
       <div>
         <h2 className="text-xl font-bold text-neutral-800">Gangsheet</h2>
-        <p className="text-xs text-neutral-500 mt-1">Tạo / in lại gangsheet từ các đơn được giao cho bạn.</p>
+        <p className="text-xs text-neutral-500 mt-1">Create / reprint gangsheets from your assigned orders.</p>
       </div>
 
       <div className="flex gap-2 border-b border-neutral-200">
         <TabBtn active={tab === 'compose'} onClick={() => setTab('compose')}>Compose</TabBtn>
         <TabBtn active={tab === 'reconvert'} onClick={() => setTab('reconvert')}>Reconvert</TabBtn>
-        <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Đã chia</TabBtn>
+        <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
       {tab === 'compose' && <ComposeTab />}
@@ -480,9 +481,8 @@ function ComposeTab() {
   const [catalogMaterials, setCatalogMaterials] = useState([]);
   const [catalogAccessories, setCatalogAccessories] = useState([]);
   const patchPf = (patch) => { setPf(p => ({ ...p, ...patch })); setSubTab('all'); };
-  // Partner phân chia: gang tạo trong lần này sẽ tự gán cho các partner đã chọn
-  // (PUT /gangsheets/{id}/partners) nên partner thấy đơn trong partner-bullstart.
-  // Rỗng = không phân chia.
+  // Partner assignment: gangs created in this session will be auto-assigned
+  // to the selected partners. Empty = no assignment.
   const [partnerUsers, setPartnerUsers] = useState([]);
   const [selectedPartners, setSelectedPartners] = useState(new Set());
   // order_type → convert layout map.
@@ -590,9 +590,9 @@ function ComposeTab() {
 
   const handleGenerate = async () => {
     const selected = orders.filter(o => selectedIds.has(o.id));
-    if (selected.length === 0) { alert('Chọn ít nhất 1 đơn'); return; }
+    if (selected.length === 0) { alert('Select at least 1 order'); return; }
     if (!window.electronAPI?.s3Upload) {
-      alert('Tạo gangsheet cần chạy trong app desktop (Electron).');
+      alert('Gangsheet creation requires the desktop app (Electron).');
       return;
     }
 
@@ -654,7 +654,7 @@ function ComposeTab() {
           meta_ids: built.metaIds,
         });
         const created = res.data.gangsheet;
-        // 3) Phân chia: gán gang vừa tạo cho các partner đã chọn (nếu có).
+        // 3) Assign the new gang to the selected partners (if any).
         if (selectedPartners.size > 0 && created?.id) {
           try {
             await api.put(`/gangsheets/${created.id}/partners`, { user_ids: [...selectedPartners] });
@@ -669,10 +669,10 @@ function ComposeTab() {
       setSelectedIds(new Set());
       await fetchOrders();
     } catch (err) {
-      const detail = err?.response?.data?.message || err?.message || 'Tạo gangsheet thất bại';
+      const detail = err?.response?.data?.message || err?.message || 'Gangsheet creation failed';
       const status = err?.response?.status ? ` [HTTP ${err.response.status}]` : '';
       console.error('[partner-gangsheet] generate error', err);
-      alert(`Tạo gangsheet thất bại${status}:\n${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+      alert(`Gangsheet creation failed${status}:\n${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
     } finally {
       setRunning(false);
       setProgress(null);
@@ -685,13 +685,13 @@ function ComposeTab() {
         <div className="flex justify-between items-end gap-3">
           <div>
             <h3 className="text-sm font-semibold text-neutral-700">
-              Đơn được giao ({visibleOrders.length}{hasActivePf(pf) ? ` / ${orders.length}` : ''})
+              Assigned orders ({visibleOrders.length}{hasActivePf(pf) ? ` / ${orders.length}` : ''})
             </h3>
-            <p className="text-xs text-neutral-500">Các đơn nằm trong gangsheet admin đã chia cho bạn. Gom thành PDF mới để in.</p>
+            <p className="text-xs text-neutral-500">Orders from gangsheets assigned to you. Select and compose into new PDFs for printing.</p>
           </div>
           <div className="flex gap-2 items-end">
             <div>
-              <label className="text-xs text-neutral-500 block">Đơn / batch</label>
+              <label className="text-xs text-neutral-500 block">Orders / batch</label>
               <div className="mt-1 flex items-center gap-1">
                 <input type="number" min="1" value={batchSize}
                   onChange={e => { setBatchSize(Math.max(1, parseInt(e.target.value) || 1)); setBatchSaved(false); }}
@@ -699,20 +699,20 @@ function ComposeTab() {
                 <button type="button"
                   onClick={() => { localStorage.setItem('gangsheet_batch_size', String(batchSize)); setBatchSaved(true); }}
                   className="px-2 py-1.5 text-xs rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700">
-                  {batchSaved ? '✓ Đã lưu' : 'Lưu'}
+                  {batchSaved ? '✓ Saved' : 'Save'}
                 </button>
               </div>
             </div>
             <PageFormatSelect />
-            <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer select-none pb-2" title="Xuất thêm mỗi trang gang thành 1 file .png lên B2">
+            <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer select-none pb-2" title="Also export each page as a separate .png to B2">
               <input type="checkbox" checked={exportPng}
                 onChange={e => { setExportPng(e.target.checked); saveExportPng(e.target.checked); }}
                 className="accent-orange-500" />
-              Xuất PNG
+              Export PNG
             </label>
             <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
               className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
-              {running ? 'Đang tạo…' : `Tạo gang (${selectedIds.size})`}
+              {running ? 'Generating…' : `Generate (${selectedIds.size})`}
             </button>
             <button onClick={fetchOrders} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Refresh</button>
           </div>
@@ -720,16 +720,16 @@ function ComposeTab() {
 
         {/* Classification dimension toggles */}
         <div className="flex flex-wrap items-center gap-1">
-          <span className="text-xs text-neutral-500 mr-1">Phân loại theo:</span>
+          <span className="text-xs text-neutral-500 mr-1">Group by:</span>
           {GANG_DIMS.map(d => (
             <SubChip key={d.id} active={groupBy.has(d.id)} onClick={() => toggleGroupBy(d.id)}>{d.label}</SubChip>
           ))}
-          <span className="text-[11px] text-neutral-400 ml-1">· 1/2 mặt luôn tách</span>
+          <span className="text-[11px] text-neutral-400 ml-1">· 1/2 sides always split</span>
         </div>
 
         {/* Product filters */}
         <div className="flex flex-wrap items-center gap-2 bg-[#faf8f6]/60 border border-neutral-200 rounded-xl px-3 py-2">
-          <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wide shrink-0">Sản phẩm</span>
+          <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wide shrink-0">Product</span>
 
           <select value={pf.product_id}
             onChange={e => {
@@ -744,7 +744,7 @@ function ComposeTab() {
             }}
             className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none max-w-[200px]"
           >
-            <option value="">Tất cả sản phẩm</option>
+            <option value="">All products</option>
             {catalogProducts.map(p => (
               <option key={p.id} value={p.id}>{p.name}{p.line_id ? ` (${p.line_id})` : ''}</option>
             ))}
@@ -772,7 +772,7 @@ function ComposeTab() {
 
           <select value={pf.color} onChange={e => patchPf({ color: e.target.value })} disabled={!pf.product_id}
             className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-28 disabled:opacity-50">
-            <option value="">Màu</option>
+            <option value="">Color</option>
             {catalogColors.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
 
@@ -784,7 +784,7 @@ function ComposeTab() {
 
           <select value={pf.paper_type} onChange={e => patchPf({ paper_type: e.target.value })} disabled={!pf.product_id}
             className="px-2 py-1.5 bg-white border border-neutral-200 rounded-lg text-neutral-700 text-sm focus:outline-none w-32 disabled:opacity-50">
-            <option value="">Giấy</option>
+            <option value="">Paper</option>
             {catalogPaperTypes.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
 
@@ -816,16 +816,15 @@ function ComposeTab() {
           )}
         </div>
 
-        {/* Phân chia cho partner: gang tạo ra trong lần Generate này sẽ tự gán
-            cho các partner chọn ở đây (họ thấy đơn trong app partner-bullstart). */}
+        {/* Partner assignment for gangs created in this session */}
         {partnerUsers.length > 0 && (
           <div className="flex flex-wrap items-center gap-1">
-            <span className="text-xs text-neutral-500 mr-1">Phân chia cho partner:</span>
+            <span className="text-xs text-neutral-500 mr-1">Assign to partner:</span>
             {partnerUsers.map(u => (
               <SubChip key={u.id} active={selectedPartners.has(u.id)} onClick={() => togglePartner(u.id)}>{u.name}</SubChip>
             ))}
             {selectedPartners.size > 0 && (
-              <button onClick={() => setSelectedPartners(new Set())} className="text-xs text-neutral-400 hover:text-neutral-600 ml-1">× bỏ chọn</button>
+              <button onClick={() => setSelectedPartners(new Set())} className="text-xs text-neutral-400 hover:text-neutral-600 ml-1">× clear</button>
             )}
           </div>
         )}
@@ -844,7 +843,7 @@ function ComposeTab() {
           <p className="text-neutral-400 text-sm">Loading…</p>
         ) : filteredOrders.length === 0 ? (
           <p className="text-neutral-400 text-sm">
-            {subTab === 'all' ? 'Chưa có đơn nào được giao cho bạn.' : 'Không có đơn nào trong nhóm này.'}
+            {subTab === 'all' ? 'No orders assigned to you yet.' : 'No orders in this group.'}
           </p>
         ) : (
           <table className="w-full text-sm">
@@ -913,7 +912,7 @@ function ComposeTab() {
 
       {progress && (
         <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm">
-          <h3 className="text-sm font-semibold text-neutral-700 mb-2">Đang xử lý…</h3>
+          <h3 className="text-sm font-semibold text-neutral-700 mb-2">Processing…</h3>
           <div className="text-xs text-neutral-600">
             Chunk <span className="font-medium">{progress.chunkIndex + 1}/{progress.totalChunks}</span>
             {' · '}meta <span className="font-medium">{progress.done}/{progress.total}</span>
@@ -928,7 +927,7 @@ function ComposeTab() {
 
       {results.length > 0 && (
         <div className="bg-white rounded-xl border border-green-200 p-4 shadow-sm">
-          <h3 className="text-sm font-semibold text-green-700 mb-2">Vừa tạo</h3>
+          <h3 className="text-sm font-semibold text-green-700 mb-2">Just created</h3>
           <ul className="text-sm space-y-1">
             {results.map(g => (
               <li key={g.id} className="flex justify-between gap-3">
@@ -937,7 +936,7 @@ function ComposeTab() {
                   {g.png_urls?.length > 0 && (
                     <button type="button" onClick={() => openGangPngs(g)}
                       className="text-emerald-600 hover:text-emerald-700 text-xs"
-                      title={`Mở ${g.png_urls.length} file PNG của gang này`}>
+                      title={`Open ${g.png_urls.length} PNG files`}>
                       Open PNG ({g.png_urls.length})
                     </button>
                   )}
@@ -983,14 +982,14 @@ function ReconvertTab() {
 
   const handleReconvert = async () => {
     if (selectedIds.size === 0) return;
-    if (!confirm(`Reconvert ${selectedIds.size} đơn?\nCác meta _qr sẽ bị xoá và converter cron build lại từ mockup URL.`)) return;
+    if (!confirm(`Reconvert ${selectedIds.size} order(s)?\n_qr metas will be deleted and the converter cron will rebuild from mockup URLs.`)) return;
     setRunning(true);
     try {
       const res = await api.post('/partner/orders/reconvert', { order_ids: [...selectedIds] });
-      alert(res?.data?.message || `Reconvert queued cho ${selectedIds.size} đơn`);
+      alert(res?.data?.message || `Reconvert queued for ${selectedIds.size} order(s)`);
       await fetchOrders();
     } catch (err) {
-      alert(err?.response?.data?.message || 'Reconvert thất bại');
+      alert(err?.response?.data?.message || 'Reconvert failed');
     } finally {
       setRunning(false);
     }
@@ -1000,13 +999,13 @@ function ReconvertTab() {
     <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
       <div className="flex justify-between items-end gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-neutral-700">Reconvert đơn được giao ({orders.length})</h3>
-          <p className="text-xs text-neutral-500">Render lại design <span className="font-mono">_qr</span> cho các đơn in lỗi. Cron sẽ build lại tự động.</p>
+          <h3 className="text-sm font-semibold text-neutral-700">Reconvert assigned orders ({orders.length})</h3>
+          <p className="text-xs text-neutral-500">Re-render <span className="font-mono">_qr</span> designs for failed prints. The converter cron will rebuild automatically.</p>
         </div>
         <div className="flex gap-2 items-end">
           <button onClick={handleReconvert} disabled={running || selectedIds.size === 0}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
-            {running ? 'Đang xử lý…' : `Reconvert (${selectedIds.size})`}
+            {running ? 'Processing…' : `Reconvert (${selectedIds.size})`}
           </button>
           <button onClick={fetchOrders} className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Refresh</button>
         </div>
@@ -1015,7 +1014,7 @@ function ReconvertTab() {
       {loading ? (
         <p className="text-neutral-400 text-sm">Loading…</p>
       ) : orders.length === 0 ? (
-        <p className="text-neutral-400 text-sm">Chưa có đơn nào được giao cho bạn.</p>
+        <p className="text-neutral-400 text-sm">No orders assigned to you yet.</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
@@ -1062,6 +1061,21 @@ function ManageTab() {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
   const [subTab, setSubTab] = useState('all');
+  // Bulk select
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  // PNG export
+  const [pngBusyId, setPngBusyId] = useState(null);
+  const [pngProgress, setPngProgress] = useState(null);
+  // ZIP download
+  const [zipping, setZipping] = useState(false);
+  const [zipProgress, setZipProgress] = useState(null);
+  // Reconvert
+  const [reconvertingId, setReconvertingId] = useState(null);
+
+  const patchGang = (id, patch) => setList(prev => ({
+    ...prev,
+    data: prev.data.map(g => (g.id === id ? { ...g, ...patch } : g)),
+  }));
 
   const fetchList = () => {
     setLoading(true);
@@ -1071,7 +1085,7 @@ function ManageTab() {
     if (filters.line_id) params.line_id = filters.line_id;
     if (filters.page_format) params.page_format = filters.page_format;
     api.get('/partner/gangsheets', { params })
-      .then(res => { setList(res.data); setSubTab('all'); })
+      .then(res => { setList(res.data); setSubTab('all'); setSelectedIds(new Set()); })
       .finally(() => setLoading(false));
   };
   useEffect(() => { fetchList(); }, [filters.page, filters.page_format]);
@@ -1084,6 +1098,21 @@ function ManageTab() {
   const cats = Object.keys(catCounts).sort((a, b) => catCounts[b] - catCounts[a]);
   const visible = subTab === 'all' ? list.data : list.data.filter(g => gangCategory(g.filename) === subTab);
 
+  const toggleSelected = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleSelectAll = () => {
+    const allSel = visible.length > 0 && visible.every(g => selectedIds.has(g.id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (allSel) visible.forEach(g => next.delete(g.id));
+      else visible.forEach(g => next.add(g.id));
+      return next;
+    });
+  };
+
   const applyFilters = (e) => { e?.preventDefault(); setFilters(f => ({ ...f, page: 1 })); setTimeout(fetchList, 0); };
   const clearFilters = () => { setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 }); setTimeout(fetchList, 0); };
 
@@ -1094,16 +1123,95 @@ function ManageTab() {
 
   const togglePrinted = async (g) => {
     const printed = !g.pivot?.printed_at;
-    setList(prev => ({
-      ...prev,
-      data: prev.data.map(x => x.id === g.id
-        ? { ...x, pivot: { ...x.pivot, printed_at: printed ? new Date().toISOString() : null } }
-        : x),
-    }));
+    patchGang(g.id, { pivot: { ...g.pivot, printed_at: printed ? new Date().toISOString() : null } });
     try {
       await api.post(`/partner/gangsheets/${g.id}/printed`, { printed });
     } catch {
       fetchList();
+    }
+  };
+
+  // PNG export: rasterize PDF → upload pages → save URLs
+  const handleExportPng = async (g, { force = false } = {}) => {
+    if (g.png_urls?.length && !force) { openGangPngs(g); return; }
+    if (!window.electronAPI?.s3Upload) {
+      alert('PNG export requires the desktop app (Electron).');
+      return;
+    }
+    setPngBusyId(g.id);
+    setPngProgress({ done: 0, total: 0 });
+    try {
+      const credsRes = await api.get('/partner/storage-credentials');
+      const creds = credsRes.data;
+      const blobs = await rasterizeGangPdf(g.file_url, {
+        onProgress: (p) => setPngProgress(p),
+      });
+      const urls = await uploadGangPngs(blobs, {
+        creds, pdfFilename: g.filename,
+        onProgress: (p) => setPngProgress({ done: p.pngDone, total: p.pngTotal }),
+      });
+      const res = await api.put(`/partner/gangsheets/${g.id}/png-urls`, { png_urls: urls, force });
+      patchGang(g.id, { png_urls: res.data.gangsheet?.png_urls || urls });
+      alert(`${force ? 'Re-exported' : 'Exported'} ${urls.length} PNG file(s)`);
+    } catch (err) {
+      alert(err?.response?.data?.message || err?.message || 'PNG export failed');
+    } finally {
+      setPngBusyId(null);
+      setPngProgress(null);
+    }
+  };
+
+  // Bulk: ZIP all PNGs from selected gangs
+  const handleDownloadPngZip = async () => {
+    const gangs = list.data.filter(g => selectedIds.has(g.id));
+    if (gangs.length === 0) return;
+    setZipping(true);
+    setZipProgress({ done: 0, total: 0 });
+    try {
+      const { zipSync } = await import('fflate');
+      const withPng = gangs.filter(g => g.png_urls?.length);
+      const urls = withPng.flatMap(g => g.png_urls);
+      if (urls.length === 0) throw new Error('Selected gangsheets have no PNG files');
+
+      const files = {};
+      let done = 0;
+      for (const url of urls) {
+        const name = decodeURIComponent(String(url).split('/').pop() || `page_${done + 1}.png`);
+        files[name] = await fetchFileBytes(url);
+        setZipProgress({ done: ++done, total: urls.length });
+      }
+
+      const zipped = zipSync(files, { level: 0 });
+      const zipName = withPng.length === 1
+        ? `${String(withPng[0].filename || 'gangsheet').replace(/\.pdf$/i, '')}_png.zip`
+        : `gangsheet_png_${withPng.length}gang_${urls.length}file.zip`;
+
+      const blobUrl = URL.createObjectURL(new Blob([zipped], { type: 'application/zip' }));
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = zipName;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+      alert(`${zipName} — ${urls.length} PNG from ${withPng.length} gang(s)`);
+    } catch (err) {
+      alert(err?.message || 'PNG download failed');
+    } finally {
+      setZipping(false);
+      setZipProgress(null);
+    }
+  };
+
+  // Reconvert all orders in a gangsheet
+  const handleReconvertGang = async (g) => {
+    if (!confirm(`Reconvert orders in gangsheet ${g.filename}?\n_qr metas will be deleted and the converter cron will rebuild.`)) return;
+    setReconvertingId(g.id);
+    try {
+      const res = await api.post(`/partner/gangsheets/${g.id}/reconvert`);
+      alert(res?.data?.message || 'Reconvert queued');
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Reconvert failed');
+    } finally {
+      setReconvertingId(null);
     }
   };
 
@@ -1127,12 +1235,29 @@ function ManageTab() {
         </div>
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Apply</button>
         <button type="button" onClick={clearFilters} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
-        <span className="text-xs text-neutral-500 ml-auto">Total: {list.total ?? 0}</span>
+        <button
+          type="button"
+          onClick={handleDownloadPngZip}
+          disabled={selectedIds.size === 0 || zipping}
+          className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 text-white text-sm rounded-lg"
+          title="Download all PNG files from selected gangsheets as a .zip"
+        >
+          {zipping
+            ? `Zipping ${zipProgress?.done ?? 0}/${zipProgress?.total ?? '?'}…`
+            : `PNG .zip (${selectedIds.size})`}
+        </button>
+        <span className="text-xs text-neutral-500 ml-auto">
+          <span className="font-semibold text-green-600">{list.data.filter(g => g.pivot?.printed_at).length}</span>
+          {' / '}
+          <span className="font-semibold">{list.data.length}</span>
+          {' printed · Total: '}
+          {list.total ?? 0}
+        </span>
       </form>
 
       <div className="flex flex-wrap items-center gap-1">
-        <span className="text-xs text-neutral-500 mr-1">Khổ:</span>
-        <SubChip active={filters.page_format === ''} onClick={() => setFilters(f => ({ ...f, page_format: '', page: 1 }))}>Tất cả</SubChip>
+        <span className="text-xs text-neutral-500 mr-1">Format:</span>
+        <SubChip active={filters.page_format === ''} onClick={() => setFilters(f => ({ ...f, page_format: '', page: 1 }))}>All</SubChip>
         <SubChip active={filters.page_format === 'original'} onClick={() => setFilters(f => ({ ...f, page_format: 'original', page: 1 }))}>Default (10×7)</SubChip>
         <SubChip active={filters.page_format === 'letter'} onClick={() => setFilters(f => ({ ...f, page_format: 'letter', page: 1 }))}>Letter 11×8.5</SubChip>
       </div>
@@ -1148,16 +1273,21 @@ function ManageTab() {
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-neutral-500 text-xs bg-[#faf8f6] border-b border-neutral-200">
+              <th className="px-3 py-2 text-center w-8">
+                <input type="checkbox" onChange={toggleSelectAll}
+                  checked={visible.length > 0 && visible.every(g => selectedIds.has(g.id))}
+                  className="accent-orange-500" title="Select all visible" />
+              </th>
+              <th className="px-3 py-2 text-center w-10" title="Printed">Printed</th>
               <th className="px-3 py-2 text-left">Filename</th>
               <th className="px-3 py-2 text-left">Range</th>
               <th className="px-3 py-2 text-left">Line</th>
               <th className="px-3 py-2 text-right">Orders</th>
               <th className="px-3 py-2 text-right">Metas</th>
-              <th className="px-3 py-2 text-center">Đã in</th>
               <th className="px-3 py-2 text-left">Creator</th>
               <th className="px-3 py-2 text-left">When</th>
               <th className="px-3 py-2 text-right">Actions</th>
@@ -1165,11 +1295,30 @@ function ManageTab() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} className="p-6 text-center text-neutral-400">Loading…</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-neutral-400">Loading…</td></tr>
             ) : visible.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-neutral-400">Chưa có gangsheet nào được phân quyền.</td></tr>
-            ) : visible.map(g => (
-              <tr key={g.id} className="border-b border-neutral-100 hover:bg-orange-50/30">
+              <tr><td colSpan={10} className="p-6 text-center text-neutral-400">No gangsheets assigned yet.</td></tr>
+            ) : visible.map(g => {
+              const isPrinted = !!g.pivot?.printed_at;
+              const isSel = selectedIds.has(g.id);
+              return (
+              <tr key={g.id} className={`border-b border-neutral-100 hover:bg-orange-50/30 ${isSel ? 'bg-orange-50/60' : isPrinted ? 'bg-green-50/40' : ''}`}>
+                <td className="px-3 py-2 text-center">
+                  <input type="checkbox" checked={isSel} onChange={() => toggleSelected(g.id)} className="accent-orange-500" />
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <button
+                    onClick={() => togglePrinted(g)}
+                    title={isPrinted ? `Printed ${new Date(g.pivot.printed_at).toLocaleString()} — click to unmark` : 'Not printed — click to mark'}
+                    className={`w-6 h-6 rounded border-2 flex items-center justify-center text-base transition ${
+                      isPrinted
+                        ? 'bg-emerald-500 border-emerald-600 text-white'
+                        : 'bg-white border-neutral-300 hover:border-emerald-400 text-transparent hover:text-emerald-300'
+                    }`}
+                  >
+                    ✓
+                  </button>
+                </td>
                 <td className="px-3 py-2 font-mono text-xs text-neutral-700 truncate max-w-[260px]">{g.filename}</td>
                 <td className="px-3 py-2 font-mono text-xs text-neutral-500">
                   {g.first_system_id}{g.first_system_id !== g.last_system_id && <> → {g.last_system_id}</>}
@@ -1177,20 +1326,47 @@ function ManageTab() {
                 <td className="px-3 py-2 font-mono text-xs">{g.line_id || '-'}</td>
                 <td className="px-3 py-2 text-right">{g.orders_count}</td>
                 <td className="px-3 py-2 text-right">{g.metas_count}</td>
-                <td className="px-3 py-2 text-center">
-                  <input type="checkbox" checked={!!g.pivot?.printed_at} onChange={() => togglePrinted(g)}
-                    className="accent-green-600 w-4 h-4" title={g.pivot?.printed_at ? `Đã in ${new Date(g.pivot.printed_at).toLocaleString()}` : 'Tích khi in xong'} />
-                </td>
                 <td className="px-3 py-2 text-xs">{g.creator?.name || '-'}</td>
                 <td className="px-3 py-2 text-xs text-neutral-500">{new Date(g.created_at).toLocaleString()}</td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex gap-3 justify-end">
                     <button onClick={() => setDetail(g)} className="text-xs text-neutral-600 hover:text-neutral-800">Detail</button>
                     <button onClick={() => openLink(g.file_url)} className="text-xs text-orange-500 hover:text-orange-600">Download</button>
+                    <button
+                      onClick={() => handleExportPng(g)}
+                      disabled={pngBusyId === g.id}
+                      className="text-xs text-emerald-600 hover:text-emerald-700 disabled:opacity-40"
+                      title={g.png_urls?.length
+                        ? `Open ${g.png_urls.length} exported PNG file(s)`
+                        : 'Split this gang PDF into individual PNG pages and upload to B2'}
+                    >
+                      {pngBusyId === g.id
+                        ? `PNG ${pngProgress?.done ?? 0}/${pngProgress?.total ?? '?'}…`
+                        : (g.png_urls?.length ? `Open PNG (${g.png_urls.length})` : 'Export PNG')}
+                    </button>
+                    {g.png_urls?.length > 0 && (
+                      <button
+                        onClick={() => handleExportPng(g, { force: true })}
+                        disabled={pngBusyId === g.id}
+                        className="text-xs text-emerald-600/70 hover:text-emerald-700 disabled:opacity-40"
+                        title="Re-export PNG from the current PDF and overwrite existing files"
+                      >
+                        Re-export
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleReconvertGang(g)}
+                      disabled={reconvertingId === g.id}
+                      className="text-xs text-blue-600 hover:text-blue-700 disabled:opacity-40"
+                      title="Delete _qr metas for orders in this gang; cron rebuilds from mockup URLs"
+                    >
+                      {reconvertingId === g.id ? 'Reconverting…' : 'Reconvert'}
+                    </button>
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1235,29 +1411,50 @@ function DetailModal({ gs, onClose, openLink }) {
           <button onClick={() => openLink(gs.file_url)} className="mb-3 text-orange-500 text-xs break-all hover:underline">{gs.file_url}</button>
           {loading ? (
             <p className="text-neutral-400 text-sm">Loading…</p>
-          ) : !data || data.orders.length === 0 ? (
-            <p className="text-neutral-400 text-sm">No orders.</p>
+          ) : !data ? (
+            <p className="text-neutral-400 text-sm">No data.</p>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-neutral-500 text-xs border-b border-neutral-200">
-                  <th className="py-2 text-left">System ID</th>
-                  <th className="py-2 text-left">Ref</th>
-                  <th className="py-2 text-right">Total</th>
-                  <th className="py-2 text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.orders.map(o => (
-                  <tr key={o.id} className="border-b border-neutral-100">
-                    <td className="py-1.5 font-mono text-orange-500 text-xs">{o.system_id}</td>
-                    <td className="py-1.5 text-xs text-neutral-600">{o.ref_id || '-'}</td>
-                    <td className="py-1.5 text-right">${o.total_cost}</td>
-                    <td className="py-1.5 text-right text-xs">{o.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <>
+              {/* PNG links */}
+              {data.gangsheet?.png_urls?.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-1">
+                  {data.gangsheet.png_urls.map((url, i) => (
+                    <button key={i} onClick={() => openLink(url)} className="text-emerald-600 text-xs hover:underline">
+                      PNG p{i + 1}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <h4 className="text-xs font-semibold text-neutral-600 uppercase mb-2">Orders ({data.orders.length})</h4>
+              {data.orders.length === 0 ? (
+                <p className="text-neutral-400 text-sm">No orders found.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-neutral-500 text-xs border-b border-neutral-200">
+                      <th className="py-2 text-left">System ID</th>
+                      <th className="py-2 text-left">Ref</th>
+                      <th className="py-2 text-right">Total</th>
+                      <th className="py-2 text-right">Partner Rev</th>
+                      <th className="py-2 text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.orders.map(o => (
+                      <tr key={o.id} className="border-b border-neutral-100">
+                        <td className="py-1.5 font-mono text-orange-500 text-xs">{o.system_id}</td>
+                        <td className="py-1.5 text-xs text-neutral-600">{o.ref_id || '-'}</td>
+                        <td className="py-1.5 text-right">${o.total_cost}</td>
+                        <td className="py-1.5 text-right text-emerald-600 font-medium">
+                          {o.partner_revenue != null ? `$${o.partner_revenue}` : '-'}
+                        </td>
+                        <td className="py-1.5 text-right text-xs">{o.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
           )}
         </div>
       </div>
