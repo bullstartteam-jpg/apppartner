@@ -39,6 +39,39 @@ function CountBadge({ n }) {
 
 // ─────────────────────────────── helpers ───────────────────────────────
 
+function orderMetaCount(order, includeProduced = false) {
+  let n = 0;
+  for (const it of order.items || [])
+    for (const m of it.metas || [])
+      if (isQrKey(m.key) && (includeProduced || !m.production)) n++;
+  return n;
+}
+
+function chunkCardOrders(orders, perPage = 3, includeProduced = false) {
+  if (orders.length === 0) return [];
+  const chunks = [];
+  let cur = [];
+  let metas = 0;
+  for (const o of orders) {
+    const n = orderMetaCount(o, includeProduced);
+    cur.push(o);
+    metas += n;
+    if (metas > 0 && metas % perPage === 0) {
+      chunks.push(cur);
+      cur = [];
+      metas = 0;
+    }
+  }
+  if (cur.length > 0) {
+    if (chunks.length > 0 && metas < perPage) {
+      chunks[chunks.length - 1] = chunks[chunks.length - 1].concat(cur);
+    } else {
+      chunks.push(cur);
+    }
+  }
+  return chunks;
+}
+
 function slugifyAccessory(name) {
   return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
 }
@@ -148,7 +181,8 @@ function orderChipTag(order) {
   for (const it of order.items || []) {
     for (const a of itemAccessoryList(it)) {
       const kind = chipKindOf(a.style) || chipKindOf(a.code) || chipKindOf(a.name);
-      if (kind) return kind;
+      if (kind === 'holo') return 'holo';
+      if (kind === 'bigchip' || kind === 'smallchip') return 'chip';
     }
   }
   return 'nochip';
@@ -262,7 +296,7 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
   }
   for (const [, g] of cardGroups) {
     const tag = `${slugifyAccessory(g.ot) || 'skincard'}_${g.chip}`;
-    for (const chunk of chunkArray(g.orders, 3)) {
+    for (const chunk of chunkCardOrders(g.orders, 3, includeProduced)) {
       chunks.push({ chunk, suffix: tag, tiled: true });
     }
   }
