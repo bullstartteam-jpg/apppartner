@@ -5,6 +5,8 @@ import logo from '../assets/logo.png';
 // Partner sidebar — Dashboard + the gangsheets assigned to this partner.
 const navItems = [
   { path: '/',          label: 'Dashboard', icon: '◉' },
+  { path: '/orders',    label: 'Orders', icon: '◈' },
+  { path: '/tickets',   label: 'Ticket', icon: '💬' },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦' },
   { path: '/reprint',   label: 'Reprint', icon: '🔁' },
   { path: '/reasons',   label: 'Reasons', icon: '🏷' },

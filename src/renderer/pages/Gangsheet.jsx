@@ -285,11 +285,13 @@ function ComposeTab() {
                 <th className="py-2 text-left">Ref</th>
                 <th className="py-2 text-left">Line</th>
                 <th className="py-2 text-right">_qr metas</th>
+                <th className="py-2 text-right">Doanh thu</th>
               </tr>
             </thead>
             <tbody>
               {orders.map(o => {
                 const li = o.items?.[0]?.product_variant?.product?.line_id;
+                const locked = !!o.partner_locked_at;
                 return (
                   <tr key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
                     <td className="py-1.5"><input type="checkbox" checked={selectedIds.has(o.id)} onChange={() => toggle(o.id)} className="accent-orange-500" /></td>
@@ -297,10 +299,25 @@ function ComposeTab() {
                     <td className="py-1.5 text-xs text-neutral-600">{o.ref_id || '-'}</td>
                     <td className="py-1.5 text-xs text-neutral-600 font-mono">{li || '-'}</td>
                     <td className="py-1.5 text-right text-neutral-700">{countQrMetas(o)}</td>
+                    <td className="py-1.5 text-right text-xs font-medium">
+                      {o.partner_revenue != null
+                        ? <span className={locked ? 'text-emerald-600' : 'text-neutral-700'} title={locked ? `Đã chốt lúc ${new Date(o.partner_locked_at).toLocaleString()}` : 'Chưa chốt (admin còn sửa được)'}>
+                            {locked ? '🔒 ' : ''}${o.partner_revenue}
+                          </span>
+                        : <span className="text-neutral-300">—</span>}
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
+            <tfoot>
+              <tr className="border-t border-neutral-200 text-xs font-semibold">
+                <td colSpan={5} className="py-1.5 text-right text-neutral-500">Tổng doanh thu</td>
+                <td className="py-1.5 text-right text-emerald-700">
+                  ${orders.reduce((s, o) => s + (Number(o.partner_revenue) || 0), 0).toFixed(2)}
+                </td>
+              </tr>
+            </tfoot>
           </table>
         )}
       </div>
