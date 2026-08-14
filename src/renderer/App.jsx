@@ -3,6 +3,8 @@ import { useAuth } from './contexts/AuthContext';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Orders from './pages/Orders';
+import Tickets from './pages/Tickets';
 import Gangsheet from './pages/Gangsheet';
 import Reprint from './pages/Reprint';
 import Reasons from './pages/Reasons';
@@ -49,6 +51,8 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route index element={<Dashboard />} />
+          <Route path="orders" element={<Orders />} />
+          <Route path="tickets" element={<Tickets />} />
           <Route path="gangsheet" element={<Gangsheet />} />
           <Route path="reprint" element={<Reprint />} />
           <Route path="reasons" element={<Reasons />} />

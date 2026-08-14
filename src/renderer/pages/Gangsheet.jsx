@@ -892,10 +892,14 @@ function ComposeTab() {
                 <th className="py-2 text-left">Accessory</th>
                 <th className="py-2 text-left">Code</th>
                 <th className="py-2 text-right">_qr</th>
+                <th className="py-2 text-right">Doanh thu</th>
               </tr>
             </thead>
             {filteredOrders.map(o => {
               const items = o.items?.length ? o.items : [null];
+              // Locked = the partner marked the gang printed, so the amount is
+              // settled and admin can no longer edit it.
+              const locked = !!o.partner_locked_at;
               return (
                 <tbody key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
                   {items.map((it, idx) => {
@@ -934,12 +938,31 @@ function ComposeTab() {
                         <td className={`py-1.5 text-right ${it && countItemQrMetas(it) ? 'text-neutral-700' : 'text-neutral-300'}`}>
                           {it ? countItemQrMetas(it) : 0}
                         </td>
+                        {idx === 0 && (
+                          <td className="py-1.5 align-top text-right text-xs font-medium" rowSpan={items.length}>
+                            {o.partner_revenue != null
+                              ? <span className={locked ? 'text-emerald-600' : 'text-neutral-700'}
+                                  title={locked ? `Đã chốt lúc ${new Date(o.partner_locked_at).toLocaleString()}` : 'Chưa chốt (admin còn sửa được)'}>
+                                  {locked ? '🔒 ' : ''}${o.partner_revenue}
+                                </span>
+                              : <span className="text-neutral-300">—</span>}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
                 </tbody>
               );
             })}
+            <tfoot>
+              {/* Totals follow what is on screen, so switching sub-tab retotals. */}
+              <tr className="border-t border-neutral-200 text-xs font-semibold">
+                <td colSpan={8} className="py-1.5 text-right text-neutral-500">Tổng doanh thu</td>
+                <td className="py-1.5 text-right text-emerald-700">
+                  ${filteredOrders.reduce((s, o) => s + (Number(o.partner_revenue) || 0), 0).toFixed(2)}
+                </td>
+              </tr>
+            </tfoot>
           </table>
         )}
       </div>
