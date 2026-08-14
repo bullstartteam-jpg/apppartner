@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
 import { notify } from '../components/Dialog';
+import { UrlPreview, PreviewModal } from '../components/Preview';
+import { isPreviewable } from '../utils/drive';
 import {
   CreateTicketModal, TicketThreadModal, TicketStatusPill, fmtTime,
 } from '../components/TicketModals';
@@ -214,11 +216,32 @@ export default function Orders() {
  * Order detail. Same shape as the admin order page minus price and seller —
  * the API already dropped those fields, this only renders what arrives.
  */
+// Images to show for one item, in the order a printer wants them: the
+// converted print files first (that is what goes on the press), then the
+// source designs, then the mockups for reference.
+const QR_KEY = /^(front|back|left|right|neck|special)_qr(_\d+)?$/;
+const SOURCE_KEY = /^(front|back|left|right|neck|special)$/;
+
+function itemThumbs(item) {
+  const qr = [];
+  const src = [];
+  for (const m of item.metas || []) {
+    if (!m.value || !isPreviewable(m.value)) continue;
+    if (QR_KEY.test(m.key)) qr.push({ key: m.key, url: m.value, label: m.key });
+    else if (SOURCE_KEY.test(m.key)) src.push({ key: m.key, url: m.value, label: `design ${m.key}` });
+  }
+  const mock = [];
+  if (isPreviewable(item.mockup_front)) mock.push({ key: 'mf', url: item.mockup_front, label: 'mockup front' });
+  if (isPreviewable(item.mockup_back)) mock.push({ key: 'mb', url: item.mockup_back, label: 'mockup back' });
+  return [...qr, ...src, ...mock];
+}
+
 function OrderDetailModal({ id, onClose }) {
   const [order, setOrder] = useState(null);
   const [tickets, setTickets] = useState([]);
   const [openTicketId, setOpenTicketId] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState(null);
 
   const loadTickets = async () => {
     try {
@@ -245,7 +268,8 @@ function OrderDetailModal({ id, onClose }) {
   );
 
   return (
-    <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+    <>
+      <div onClick={onClose} className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
       <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
         <div className="px-4 py-3 border-b border-neutral-200 flex justify-between items-center gap-3">
           <h3 className="text-sm font-semibold text-neutral-800 font-mono">{order?.system_id || 'Đang tải…'}</h3>
@@ -283,6 +307,7 @@ function OrderDetailModal({ id, onClose }) {
                     const pv = it.product_variant;
                     const accs = (it.accessory_prices?.length ? it.accessory_prices : (it.accessory_price ? [it.accessory_price] : []))
                       .map(a => a.style || a.accessory_code || a.accessory?.name).filter(Boolean);
+                    const thumbs = itemThumbs(it);
                     return (
                       <div key={it.id} className="text-sm border-t border-neutral-100 pt-2 first:border-0 first:pt-0">
                         <div className="text-neutral-800">
@@ -295,6 +320,16 @@ function OrderDetailModal({ id, onClose }) {
                           {it.material?.name && <span>Material: {it.material.name}</span>}
                           {accs.length > 0 && <span>Add-on: {accs.join(', ')}</span>}
                         </div>
+                        {thumbs.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {thumbs.map(t => (
+                              <div key={t.key} className="text-center">
+                                <UrlPreview url={t.url} onOpen={setPreviewUrl} label={t.label} size="sm" />
+                                <div className="text-[10px] text-neutral-400 mt-0.5 font-mono">{t.label}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -334,7 +369,12 @@ function OrderDetailModal({ id, onClose }) {
           )}
         </div>
       </div>
+      </div>
 
+      {/* Stacked modals live OUTSIDE the detail overlay: nested inside, a click
+          on their own backdrop would bubble into this overlay's onClick and
+          close the order behind them. Later siblings also paint on top at the
+          same z-index. */}
       {showCreate && order && (
         <CreateTicketModal orderId={order.id} systemId={order.system_id}
           onClose={() => setShowCreate(false)} onCreated={loadTickets} />
@@ -342,6 +382,7 @@ function OrderDetailModal({ id, onClose }) {
       {openTicketId && (
         <TicketThreadModal id={openTicketId} onClose={() => setOpenTicketId(null)} onChanged={loadTickets} />
       )}
-    </div>
+      <PreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
+    </>
   );
 }
