@@ -545,17 +545,14 @@ function ComposeTab() {
   const [catalogMaterials, setCatalogMaterials] = useState([]);
   const [catalogAccessories, setCatalogAccessories] = useState([]);
   const patchPf = (patch) => { setPf(p => ({ ...p, ...patch })); setSubTab('all'); };
-  // Partner assignment: gangs created in this session will be auto-assigned
-  // to the selected partners. Empty = no assignment.
-  const [partnerUsers, setPartnerUsers] = useState([]);
-  const [selectedPartners, setSelectedPartners] = useState(new Set());
+  // No partner picker here: /gangsheets/partner-users and
+  // PUT /gangsheets/{id}/partners are admin/support only, so for a partner
+  // account they answered 403 and the picker never rendered. The gang is
+  // assigned server-side to whoever created it — see storeGangsheet.
   // order_type → convert layout map.
   const [layoutMap, setLayoutMap] = useState({});
 
   useEffect(() => {
-    api.get('/gangsheets/partner-users')
-      .then(res => setPartnerUsers(res.data || []))
-      .catch(() => {});
     api.get('/settings/convert-layouts')
       .then(res => setLayoutMap(res.data?.map || {}))
       .catch(() => {});
@@ -596,12 +593,6 @@ function ComposeTab() {
   const catalogAccessoryCodes = uniqueSorted(
     (selectedAccessory?.prices ?? []).map(p => p.accessory_code).filter(Boolean)
   );
-
-  const togglePartner = (id) => setSelectedPartners(prev => {
-    const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
 
   const fetchOrders = async () => {
     setLoading(true);
@@ -711,17 +702,8 @@ function ComposeTab() {
           order_ids: built.orderIds,
           meta_ids: built.metaIds,
         });
-        const created = res.data.gangsheet;
-        // 3) Assign the new gang to the selected partners (if any).
-        if (selectedPartners.size > 0 && created?.id) {
-          try {
-            await api.put(`/gangsheets/${created.id}/partners`, { user_ids: [...selectedPartners] });
-            created.partners = partnerUsers.filter(u => selectedPartners.has(u.id));
-          } catch (e) {
-            console.error('[gangsheet] partner assign failed', e);
-          }
-        }
-        out.push(created);
+        // storeGangsheet already attached the gang to this partner.
+        out.push(res.data.gangsheet);
       }
       setResults(out);
       setSelectedIds(new Set());
@@ -873,19 +855,6 @@ function ComposeTab() {
             </button>
           )}
         </div>
-
-        {/* Partner assignment for gangs created in this session */}
-        {partnerUsers.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1">
-            <span className="text-xs text-neutral-500 mr-1">Assign to partner:</span>
-            {partnerUsers.map(u => (
-              <SubChip key={u.id} active={selectedPartners.has(u.id)} onClick={() => togglePartner(u.id)}>{u.name}</SubChip>
-            ))}
-            {selectedPartners.size > 0 && (
-              <button onClick={() => setSelectedPartners(new Set())} className="text-xs text-neutral-400 hover:text-neutral-600 ml-1">× clear</button>
-            )}
-          </div>
-        )}
 
         {/* Bucket sub-tabs */}
         <div className="flex flex-wrap items-center gap-1 border-b border-neutral-100 pb-2">

@@ -1,6 +1,6 @@
 {
   "name": "bullstart-partner",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "BullStart Partner Desktop App — partners view the gangsheets assigned to them; talks to hubbullstart API.",
   "main": "src/main/main.js",
   "scripts": {
