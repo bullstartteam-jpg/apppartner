@@ -12,10 +12,109 @@ import {
 // on this screen has to remember to hide them.
 const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
 
-const FILTER_DEFAULTS = {
-  status: '', system_id: '', system_ids: '', ref_id: '', line_id: '', sku: '',
-  date_from: '', date_to: '', page: 1,
+// Same palette and the same option list as the admin Orders page, so a status
+// reads identically wherever it is seen.
+const TRACKING_COLOR = {
+  delivered: 'bg-emerald-100 text-emerald-700',
+  in_transit: 'bg-blue-100 text-blue-700',
+  out_for_delivery: 'bg-cyan-100 text-cyan-700',
+  accepted: 'bg-neutral-100 text-neutral-600',
+  pre_shipment: 'bg-neutral-100 text-neutral-500',
+  delivery_attempted: 'bg-orange-100 text-orange-700',
+  exception: 'bg-red-100 text-red-700',
+  unknown: 'bg-neutral-100 text-neutral-500',
 };
+const TRACKING_STATUSES = [
+  { value: 'none', label: 'Chưa quét' },
+  { value: 'pre_shipment', label: 'Pre-shipment' },
+  { value: 'accepted', label: 'Accepted' },
+  { value: 'in_transit', label: 'In transit' },
+  { value: 'out_for_delivery', label: 'Out for delivery' },
+  { value: 'delivery_attempted', label: 'Delivery attempted' },
+  { value: 'delivered', label: 'Delivered' },
+  { value: 'exception', label: 'Exception' },
+  { value: 'unknown', label: 'Unknown' },
+];
+
+function TrackingCell({ order }) {
+  const t = order.tracking;
+  if (!t?.status && !order.tracking_id) return <span className="text-neutral-300">—</span>;
+  return (
+    <div className="space-y-0.5">
+      {t?.status && (
+        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${TRACKING_COLOR[t.status] || 'bg-neutral-100 text-neutral-500'}`}
+          title={t.status_description || t.status}>
+          {t.status.replace(/_/g, ' ')}
+        </span>
+      )}
+      {order.tracking_id && (
+        <div className="font-mono text-[11px] text-neutral-600 truncate max-w-[160px]" title={order.tracking_id}>
+          {order.tracking_id}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const FILTER_DEFAULTS = {
+  status: '', tracking_status: '', system_id: '', system_ids: '', ref_id: '', ref_ids: '',
+  line_id: '', sku: '', date_from: '', date_to: '', page: 1,
+};
+
+const countIds = (v) => String(v || '').split(/[\s,]+/).filter(Boolean).length;
+
+/** Toolbar button for a paste-a-list filter: shows the count while active. */
+function ListFilterButton({ label, activeLabel, value, onOpen, onClear }) {
+  return (
+    <>
+      <button type="button" onClick={onOpen}
+        className={`px-3 py-1.5 text-xs rounded-lg ${value
+          ? 'bg-orange-100 text-orange-700 border border-orange-300'
+          : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'}`}>
+        {value ? `${activeLabel} (${countIds(value)})` : label}
+      </button>
+      {value && (
+        <button type="button" onClick={onClear}
+          className="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-500" title="Bỏ lọc">✕</button>
+      )}
+    </>
+  );
+}
+
+// One modal for both list filters — they differ only in wording, and the API
+// parses ref_ids and system_ids the same way (split on whitespace/commas,
+// exact match).
+const LIST_FIELDS = {
+  system_ids: { title: 'system_id', placeholder: 'CCS8089\nCCS8090\nCCS8091' },
+  ref_ids: { title: 'ref_id', placeholder: '577373453914968570\n577373657219633277' },
+};
+
+function IdListModal({ field, value, onApply, onClose }) {
+  const cfg = LIST_FIELDS[field];
+  const [text, setText] = useState(value || '');
+
+  return (
+    <div onClick={onClose} className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-6">
+      <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-lg p-5">
+        <h3 className="text-base font-semibold text-neutral-800 mb-2">Tìm theo danh sách {cfg.title}</h3>
+        <p className="text-xs text-neutral-500 mb-3">
+          Dán {cfg.title} cách nhau bằng <b>xuống dòng</b> hoặc <b>dấu phẩy</b>. Khớp chính xác.
+        </p>
+        <textarea value={text} onChange={e => setText(e.target.value)} rows={10}
+          placeholder={cfg.placeholder}
+          className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono" />
+        <div className="text-xs text-neutral-500 mt-2">
+          Nhận diện: <b>{countIds(text)}</b> {cfg.title}
+        </div>
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Huỷ</button>
+          <button onClick={() => onApply(text)}
+            className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Áp dụng</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function TicketDot({ order }) {
   const total = order.tickets_count ?? 0;
@@ -38,14 +137,14 @@ export default function Orders() {
   const [loading, setLoading] = useState(true);
   const [detailId, setDetailId] = useState(null);
   const [ticketFor, setTicketFor] = useState(null);
-  const [showIdsModal, setShowIdsModal] = useState(false);
-  const [idsInput, setIdsInput] = useState('');
+  // Which paste-a-list filter is open: 'system_ids' | 'ref_ids' | null.
+  const [listModal, setListModal] = useState(null);
 
   const fetchList = async () => {
     setLoading(true);
     try {
       const params = { page: filters.page, per_page: 20 };
-      for (const k of ['status', 'system_id', 'system_ids', 'ref_id', 'line_id', 'sku', 'date_from', 'date_to']) {
+      for (const k of ['status', 'tracking_status', 'system_id', 'system_ids', 'ref_id', 'ref_ids', 'line_id', 'sku', 'date_from', 'date_to']) {
         if (filters[k] !== '' && filters[k] != null) params[k] = filters[k];
       }
       const res = await api.get('/partner/orders/list', { params });
@@ -55,7 +154,9 @@ export default function Orders() {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchList(); }, [filters.page, filters.status, filters.system_ids]);
+  useEffect(() => {
+    fetchList();
+  }, [filters.page, filters.status, filters.tracking_status, filters.system_ids, filters.ref_ids]);
 
   const search = (e) => { e.preventDefault(); setFilters(f => ({ ...f, page: 1 })); fetchList(); };
 
@@ -96,6 +197,14 @@ export default function Orders() {
           </select>
         </div>
         <div>
+          <label className="text-xs text-neutral-500 block">Tracking</label>
+          <select value={filters.tracking_status} onChange={e => setFilters(f => ({ ...f, tracking_status: e.target.value, page: 1 }))}
+            className="mt-1 px-3 py-1.5 bg-white border border-neutral-200 rounded-lg text-sm">
+            <option value="">Tất cả</option>
+            {TRACKING_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+        </div>
+        <div>
           <label className="text-xs text-neutral-500 block">Từ ngày</label>
           <input type="date" value={filters.date_from} onChange={e => setFilters(f => ({ ...f, date_from: e.target.value }))}
             className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
@@ -106,18 +215,18 @@ export default function Orders() {
             className="mt-1 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm" />
         </div>
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Search</button>
-        <button type="button" onClick={() => { setIdsInput(filters.system_ids); setShowIdsModal(true); }}
-          className={`px-3 py-1.5 text-xs rounded-lg ${filters.system_ids
-            ? 'bg-orange-100 text-orange-700 border border-orange-300'
-            : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'}`}>
-          {filters.system_ids
-            ? `System list (${filters.system_ids.split(/[\s,]+/).filter(Boolean).length})`
-            : 'System List'}
-        </button>
-        {filters.system_ids && (
-          <button type="button" onClick={() => setFilters(f => ({ ...f, system_ids: '', page: 1 }))}
-            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-red-500">✕</button>
-        )}
+        <ListFilterButton
+          label="System List" activeLabel="System list"
+          value={filters.system_ids}
+          onOpen={() => setListModal('system_ids')}
+          onClear={() => setFilters(f => ({ ...f, system_ids: '', page: 1 }))}
+        />
+        <ListFilterButton
+          label="Ref List" activeLabel="Ref list"
+          value={filters.ref_ids}
+          onOpen={() => setListModal('ref_ids')}
+          onClear={() => setFilters(f => ({ ...f, ref_ids: '', page: 1 }))}
+        />
         <button type="button" onClick={() => setFilters(FILTER_DEFAULTS)}
           className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
       </form>
@@ -131,15 +240,16 @@ export default function Orders() {
               <th className="py-2 px-3 text-left">Sản phẩm</th>
               <th className="py-2 px-3 text-center">SL</th>
               <th className="py-2 px-3 text-left">Status</th>
+              <th className="py-2 px-3 text-left">Tracking</th>
               <th className="py-2 px-3 text-right">Doanh thu</th>
               <th className="py-2 px-3 text-left">Ngày tạo</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="py-6 text-center text-neutral-400">Đang tải…</td></tr>
+              <tr><td colSpan={8} className="py-6 text-center text-neutral-400">Đang tải…</td></tr>
             ) : list.data.length === 0 ? (
-              <tr><td colSpan={7} className="py-6 text-center text-neutral-400">Không có đơn nào</td></tr>
+              <tr><td colSpan={8} className="py-6 text-center text-neutral-400">Không có đơn nào</td></tr>
             ) : list.data.map(o => (
               <tr key={o.id} onClick={() => setDetailId(o.id)}
                 className="border-b border-neutral-100 hover:bg-orange-50/40 cursor-pointer">
@@ -160,6 +270,7 @@ export default function Orders() {
                   {(o.items || []).reduce((s, it) => s + (it.quantity || 0), 0)}
                 </td>
                 <td className="py-2 px-3 text-neutral-600 text-xs">{STATUS_MAP[o.status] ?? o.status}</td>
+                <td className="py-2 px-3 text-xs"><TrackingCell order={o} /></td>
                 <td className="py-2 px-3 text-right text-neutral-800">
                   {o.partner_revenue != null ? `$${Number(o.partner_revenue).toFixed(2)}` : '—'}
                 </td>
@@ -182,25 +293,13 @@ export default function Orders() {
         </div>
       )}
 
-      {showIdsModal && (
-        <div onClick={() => setShowIdsModal(false)} className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-6">
-          <div onClick={e => e.stopPropagation()} className="bg-white rounded-xl shadow-xl w-[90vw] max-w-lg p-5">
-            <h3 className="text-base font-semibold text-neutral-800 mb-2">Tìm theo danh sách system_id</h3>
-            <p className="text-xs text-neutral-500 mb-3">
-              Dán system_id cách nhau bằng <b>xuống dòng</b> hoặc <b>dấu phẩy</b>. Khớp chính xác.
-            </p>
-            <textarea value={idsInput} onChange={e => setIdsInput(e.target.value)} rows={10}
-              className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono" />
-            <div className="text-xs text-neutral-500 mt-2">
-              Nhận diện: <b>{idsInput.split(/[\s,]+/).filter(Boolean).length}</b> system_id
-            </div>
-            <div className="flex justify-end gap-2 mt-4">
-              <button onClick={() => setShowIdsModal(false)} className="px-4 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Huỷ</button>
-              <button onClick={() => { setFilters(f => ({ ...f, system_ids: idsInput, page: 1 })); setShowIdsModal(false); }}
-                className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Áp dụng</button>
-            </div>
-          </div>
-        </div>
+      {listModal && (
+        <IdListModal
+          field={listModal}
+          value={filters[listModal]}
+          onApply={(v) => { setFilters(f => ({ ...f, [listModal]: v, page: 1 })); setListModal(null); }}
+          onClose={() => setListModal(null)}
+        />
       )}
 
       {detailId && <OrderDetailModal id={detailId} onClose={() => setDetailId(null)} />}
@@ -293,7 +392,17 @@ function OrderDetailModal({ id, onClose }) {
                 <Row label="Ref ID" value={order.ref_id} />
                 <Row label="Status" value={STATUS_MAP[order.status] ?? order.status} />
                 <Row label="Ship type" value={order.ship_type} />
-                <Row label="Tracking" value={order.tracking_id} />
+                <Row label="Tracking" value={
+                  order.tracking_id || order.tracking?.status
+                    ? <TrackingCell order={order} />
+                    : null
+                } />
+                {order.tracking?.last_event_at && (
+                  <Row label="Cập nhật lúc" value={new Date(order.tracking.last_event_at).toLocaleString()} />
+                )}
+                {order.tracking?.delivered_at && (
+                  <Row label="Đã giao lúc" value={new Date(order.tracking.delivered_at).toLocaleString()} />
+                )}
                 <Row label="Doanh thu partner"
                   value={order.partner_revenue != null ? `$${Number(order.partner_revenue).toFixed(2)}` : '—'} />
                 <Row label="Ngày tạo" value={order.created_at ? new Date(order.created_at).toLocaleString() : '—'} />
