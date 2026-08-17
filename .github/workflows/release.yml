@@ -11,13 +11,22 @@ permissions:
 jobs:
   release:
     strategy:
+      # Don't let a mac failure cancel the Windows build — with the default
+      # fail-fast, the mac job dying takes the Windows installer down with it
+      # and the run reports as "windows-latest failed" even though nothing is
+      # wrong with it. Same setup as bullstart-app.
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
             target: --win
+            optional: false
           - os: macos-latest
             target: --mac
+            optional: true   # no Apple signing configured → tolerate failure
     runs-on: ${{ matrix.os }}
+    # The mac job is best-effort: its failure won't mark the run as failed.
+    continue-on-error: ${{ matrix.optional }}
 
     steps:
       - name: Checkout
