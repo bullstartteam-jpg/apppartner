@@ -62,11 +62,17 @@ function chunkCardOrders(orders, perPage = 3, includeProduced = false) {
       metas = 0;
     }
   }
+  // Leftovers are ALWAYS folded into the previous chunk, however many. A group
+  // whose total is not a multiple of perPage has to end on a partial page —
+  // that is arithmetic — but it should be exactly one, at the end of the last
+  // gang. Giving the leftovers their own chunk (the old `metas < perPage` rule)
+  // produced a separate gang whose last page carried 1-2 designs, which is the
+  // orphan page this function exists to prevent.
   if (cur.length > 0) {
-    if (chunks.length > 0 && metas < perPage) {
+    if (chunks.length > 0) {
       chunks[chunks.length - 1] = chunks[chunks.length - 1].concat(cur);
     } else {
-      chunks.push(cur);
+      chunks.push(cur);   // whole group is smaller than one page
     }
   }
   return chunks;
@@ -341,6 +347,28 @@ async function uploadGangPngs(pageBlobs, { creds, pdfFilename, onProgress }) {
   return urls;
 }
 
+/**
+ * Upload a built chunk's PDF(s) to B2 and return their public URLs in page
+ * order. Card-skin gangs arrive as one file per page (built.pdfPages); every
+ * other branch still produces a single multi-page file.
+ */
+async function uploadGangPdfs(built, creds) {
+  const files = built.pdfPages?.length
+    ? built.pdfPages
+    : [{ blob: built.blob, filename: built.filename }];
+  const urls = [];
+  for (const f of files) {
+    const key = `${creds.folder}/${f.filename}`;
+    const bytes = new Uint8Array(await f.blob.arrayBuffer());
+    await window.electronAPI.s3Upload({
+      credentials: creds, bucket: creds.bucket, key, body: bytes,
+      contentType: 'application/pdf',
+    });
+    urls.push(`${creds.public_url_base}/${key}`);
+  }
+  return urls;
+}
+
 function openGangPngs(g) {
   for (const url of g?.png_urls || []) {
     if (window.electronAPI?.openExternal) window.electronAPI.openExternal(url);
@@ -473,11 +501,13 @@ export default function Gangsheet() {
 
       <div className="flex gap-2 border-b border-neutral-200">
         <TabBtn active={tab === 'compose'} onClick={() => setTab('compose')}>Compose</TabBtn>
+        <TabBtn active={tab === 'find'} onClick={() => setTab('find')}>Find / Re-gang</TabBtn>
         <TabBtn active={tab === 'reconvert'} onClick={() => setTab('reconvert')}>Reconvert</TabBtn>
         <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
       {tab === 'compose' && <ComposeTab />}
+      {tab === 'find' && <FindTab />}
       {tab === 'reconvert' && <ReconvertTab />}
       {tab === 'manage' && <ManageTab />}
     </div>
@@ -652,32 +682,26 @@ function ComposeTab() {
         });
 
         // 0) PNG export (when ticked): upload each page as a separate .png.
+        //    Named off baseFilename — built.filename is now page 1's name.
         let pngUrls = null;
         if (exportPng && built.pageBlobs?.length) {
           pngUrls = await uploadGangPngs(built.pageBlobs, {
-            creds, pdfFilename: built.filename,
+            creds, pdfFilename: built.baseFilename || built.filename,
             onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
           });
         }
 
-        // 1) Upload PDF to B2.
-        const key = `${creds.folder}/${built.filename}`;
-        const arrayBuffer = await built.blob.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-        await window.electronAPI.s3Upload({
-          credentials: creds,
-          bucket: creds.bucket,
-          key,
-          body: bytes,
-          contentType: 'application/pdf',
-        });
-        const publicUrl = `${creds.public_url_base}/${key}`;
+        // 1) Upload the PDFs to B2 — card-skin gangs come back as one file per
+        //    page; other branches still return a single multi-page file.
+        const pdfUrls = await uploadGangPdfs(built, creds);
+        const publicUrl = pdfUrls[0];
 
         // 2) Record on hub (auto-assigned back to this partner).
         const res = await api.post('/partner/gangsheets', {
           filename: built.filename,
           file_url: publicUrl,
           png_urls: pngUrls,
+          pdf_urls: pdfUrls.length > 1 ? pdfUrls : null,
           line_id: linePrefix || '',
           page_format: pageFormat,
           first_system_id: built.firstSid,
@@ -1010,6 +1034,244 @@ function ComposeTab() {
 }
 
 // ─────────────────────────────── Reconvert ───────────────────────────────
+
+/**
+ * Find / Re-gang — paste a list of system_ids and rebuild their sheets.
+ *
+ * Compose only ever shows what is still outstanding; this is how a partner
+ * gets back to orders that were already ganged, e.g. to reprint a sheet.
+ * Routing and chunking go through the same routeOrdersToChunks as Compose, so
+ * a re-gang lands on the sheets the first run would have produced, and
+ * includeProduced=true throughout because every meta here is already printed.
+ *
+ * The lookup is scoped server-side to this partner: an id belonging to someone
+ * else comes back under `missing`, never as data.
+ */
+function FindTab() {
+  const [input, setInput] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [orders, setOrders] = useState([]);
+  const [missing, setMissing] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [batchSize, setBatchSize] = useState(loadDefaultBatch);
+  const [layoutMap, setLayoutMap] = useState({});
+  const [groupBy, setGroupBy] = useState(loadGroupBy);
+  const [exportPng, setExportPng] = useState(loadExportPng);
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [results, setResults] = useState([]);
+
+  useEffect(() => {
+    api.get('/settings/convert-layouts')
+      .then(res => setLayoutMap(res.data?.map || {}))
+      .catch(() => {});
+  }, []);
+
+  const parseIds = (raw) => Array.from(new Set(
+    raw.split(/[\s,;\n\r\t]+/).map(s => s.trim()).filter(Boolean)
+  ));
+
+  const handleFind = async () => {
+    const ids = parseIds(input);
+    if (ids.length === 0) { alert('Dán ít nhất một system_id'); return; }
+    setSearching(true);
+    try {
+      const res = await api.post('/partner/orders/lookup', { system_ids: ids });
+      setOrders(res.data.orders || []);
+      setMissing(res.data.missing || []);
+      setSelectedIds(new Set((res.data.orders || []).map(o => o.id)));
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Tìm thất bại');
+    } finally { setSearching(false); }
+  };
+
+  const toggle = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleAll = () => {
+    if (selectedIds.size === orders.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(orders.map(o => o.id)));
+  };
+
+  const handleGenerate = async () => {
+    const selected = orders.filter(o => selectedIds.has(o.id));
+    if (selected.length === 0) { alert('Chọn ít nhất 1 đơn'); return; }
+    if (!window.electronAPI?.s3Upload) {
+      alert('Tạo gangsheet cần bản desktop (Electron).');
+      return;
+    }
+
+    const chunks = routeOrdersToChunks(selected, { layoutMap, groupBy, batchSize, includeProduced: true });
+    setRunning(true); setResults([]);
+    const out = [];
+    try {
+      const creds = (await api.get('/partner/storage-credentials')).data;
+
+      for (let ci = 0; ci < chunks.length; ci++) {
+        const { chunk } = chunks[ci];
+        const linePrefix = dominantLineId(chunk);
+        const totalInChunk = flattenQrMetas(chunk, { includeProduced: true }).length;
+        setProgress({ chunkIndex: ci, totalChunks: chunks.length, done: 0, total: totalInChunk, system_id: '', key: '' });
+
+        const pageFormat = chunkPageFormat(chunks[ci]);
+        const built = await buildChunkPdf(chunks[ci], {
+          linePrefix, seq: ci + 1, includeProduced: true, collectPages: exportPng,
+          onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+        });
+
+        let pngUrls = null;
+        if (exportPng && built.pageBlobs?.length) {
+          pngUrls = await uploadGangPngs(built.pageBlobs, {
+            creds, pdfFilename: built.baseFilename || built.filename,
+            onProgress: (p) => setProgress(prev => ({ ...prev, ...p })),
+          });
+        }
+
+        const pdfUrls = await uploadGangPdfs(built, creds);
+
+        const res = await api.post('/partner/gangsheets', {
+          filename: built.filename,
+          file_url: pdfUrls[0],
+          png_urls: pngUrls,
+          pdf_urls: pdfUrls.length > 1 ? pdfUrls : null,
+          line_id: linePrefix || '',
+          page_format: pageFormat,
+          first_system_id: built.firstSid,
+          last_system_id: built.lastSid,
+          orders_count: built.ordersInChunk,
+          metas_count: built.metasUsed,
+          order_ids: built.orderIds,
+          meta_ids: built.metaIds,
+        });
+        out.push(res.data.gangsheet);
+      }
+      setResults(out);
+    } catch (err) {
+      const detail = err?.response?.data?.message || err?.message || 'Tạo gangsheet thất bại';
+      alert(detail + (err?.response?.status ? ` [HTTP ${err.response.status}]` : ''));
+    } finally {
+      setRunning(false);
+      setProgress(null);
+    }
+  };
+
+  const totalMetas = flattenQrMetas(orders.filter(o => selectedIds.has(o.id)), { includeProduced: true }).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
+        <h3 className="text-sm font-semibold text-neutral-700">Tìm đơn theo system_id</h3>
+        <textarea
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          rows={5}
+          placeholder="CCS8089&#10;CCS8090, CCS8091"
+          className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono"
+        />
+        <div className="flex items-center gap-3 flex-wrap">
+          <button onClick={handleFind} disabled={searching}
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg">
+            {searching ? 'Đang tìm…' : `Tìm (${parseIds(input).length})`}
+          </button>
+          <PageFormatSelect />
+          <label className="flex items-center gap-2 text-sm text-neutral-600">
+            <input type="checkbox" checked={exportPng}
+              onChange={e => { setExportPng(e.target.checked); saveExportPng(e.target.checked); }}
+              className="accent-orange-500" />
+            Xuất PNG
+          </label>
+          <label className="flex items-center gap-2 text-sm text-neutral-600">
+            Batch
+            <input type="number" min={1} value={batchSize}
+              onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value, 10) || 1))}
+              className="w-20 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-sm" />
+          </label>
+        </div>
+        {missing.length > 0 && (
+          <div className="text-xs bg-red-50 border border-red-200 text-red-700 rounded-lg p-2">
+            {/* Not-yours and not-found look the same from here on purpose — the
+                lookup is partner-scoped, so we cannot say which it was. */}
+            <b>Không tìm thấy ({missing.length}):</b>{' '}
+            <span className="font-mono break-all">{missing.join(', ')}</span>
+          </div>
+        )}
+      </div>
+
+      {orders.length > 0 && (
+        <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-3">
+          <div className="flex justify-between items-center gap-3 flex-wrap">
+            <h3 className="text-sm font-semibold text-neutral-700">
+              Đơn tìm được ({orders.length}) · đã chọn {selectedIds.size} · {totalMetas} _qr
+            </h3>
+            <button onClick={handleGenerate} disabled={running || selectedIds.size === 0}
+              className="px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+              {running ? 'Đang tạo…' : `Tạo gangsheet (${selectedIds.size})`}
+            </button>
+          </div>
+
+          {progress && (
+            <div className="text-xs text-neutral-500">
+              Chunk {progress.chunkIndex + 1}/{progress.totalChunks} · {progress.done}/{progress.total}
+              {progress.system_id ? ` · ${progress.system_id}` : ''}
+            </div>
+          )}
+
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-neutral-500 text-xs border-b border-neutral-200">
+                <th className="py-2 text-left w-8">
+                  <input type="checkbox" onChange={toggleAll}
+                    checked={orders.length > 0 && selectedIds.size === orders.length}
+                    className="accent-orange-500" />
+                </th>
+                <th className="py-2 text-left">System ID</th>
+                <th className="py-2 text-left">Ref</th>
+                <th className="py-2 text-left">Line</th>
+                <th className="py-2 text-right">_qr</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map(o => (
+                <tr key={o.id} className="border-b border-neutral-100 hover:bg-orange-50/40">
+                  <td className="py-1.5">
+                    <input type="checkbox" checked={selectedIds.has(o.id)} onChange={() => toggle(o.id)}
+                      className="accent-orange-500" />
+                  </td>
+                  <td className="py-1.5 font-mono text-orange-500 text-xs">{o.system_id}</td>
+                  <td className="py-1.5 text-xs text-neutral-600">{o.ref_id || '-'}</td>
+                  <td className="py-1.5 text-xs text-neutral-600 font-mono">
+                    {o.items?.[0]?.product_variant?.product?.line_id || '-'}
+                  </td>
+                  <td className="py-1.5 text-right text-neutral-700">{countQrMetas(o)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {results.length > 0 && (
+        <div className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm space-y-2">
+          <h3 className="text-sm font-semibold text-neutral-700">Đã tạo ({results.length})</h3>
+          {results.filter(Boolean).map(g => (
+            <div key={g.id} className="text-xs font-mono text-neutral-600 flex items-center gap-2">
+              <a href={g.file_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline truncate">
+                {g.filename}
+              </a>
+              {g.png_urls?.length > 0 && (
+                <button onClick={() => openGangPngs(g)} className="text-emerald-600 hover:text-emerald-700 font-sans">
+                  Mở PNG ({g.png_urls.length})
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ReconvertTab() {
   const [orders, setOrders] = useState([]);
