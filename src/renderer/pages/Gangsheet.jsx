@@ -1344,7 +1344,7 @@ function ReconvertTab() {
 // ─────────────────────────────── Manage (assigned list) ───────────────────────────────
 
 function ManageTab() {
-  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 });
+  const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
@@ -1359,6 +1359,7 @@ function ManageTab() {
   const [zipProgress, setZipProgress] = useState(null);
   // Reconvert
   const [reconvertingId, setReconvertingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
 
   const patchGang = (id, patch) => setList(prev => ({
     ...prev,
@@ -1372,11 +1373,12 @@ function ManageTab() {
     if (filters.date_to) params.date_to = filters.date_to;
     if (filters.line_id) params.line_id = filters.line_id;
     if (filters.page_format) params.page_format = filters.page_format;
+    if (filters.unshipped) params.unshipped = 1;
     api.get('/partner/gangsheets', { params })
       .then(res => { setList(res.data); setSubTab('all'); setSelectedIds(new Set()); })
       .finally(() => setLoading(false));
   };
-  useEffect(() => { fetchList(); }, [filters.page, filters.page_format]);
+  useEffect(() => { fetchList(); }, [filters.page, filters.page_format, filters.unshipped]);
 
   const catCounts = {};
   for (const g of list.data) {
@@ -1402,7 +1404,7 @@ function ManageTab() {
   };
 
   const applyFilters = (e) => { e?.preventDefault(); setFilters(f => ({ ...f, page: 1 })); setTimeout(fetchList, 0); };
-  const clearFilters = () => { setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', page: 1 }); setTimeout(fetchList, 0); };
+  const clearFilters = () => { setFilters({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, page: 1 }); setTimeout(fetchList, 0); };
 
   const openLink = (url) => {
     if (window.electronAPI?.openExternal) window.electronAPI.openExternal(url);
@@ -1503,6 +1505,30 @@ function ManageTab() {
     }
   };
 
+  // Removes the record only — the orders and their _qr metas stay
+  // production=true, same as the admin delete. This is how a partner clears a
+  // sheet they ganged by mistake, not a way to un-produce the work; the
+  // confirm says so, because "Delete" next to a gang reads more final than it
+  // is. The server refuses once the gang is marked printed.
+  const handleDeleteGang = async (g) => {
+    if (!confirm(
+      `Xoá gangsheet ${g.filename}?
+
+`
+      + 'Chỉ xoá bản ghi gang. Đơn và meta _qr vẫn giữ production, không quay lại hàng đợi.'
+    )) return;
+    setDeletingId(g.id);
+    try {
+      const res = await api.delete(`/partner/gangsheets/${g.id}`);
+      alert(res?.data?.message || 'Đã xoá');
+      fetchList();
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Xoá thất bại');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <form onSubmit={applyFilters} className="bg-white rounded-xl border border-neutral-200 p-4 shadow-sm flex flex-wrap gap-3 items-end">
@@ -1522,6 +1548,14 @@ function ManageTab() {
             className="mt-1 w-32 px-3 py-1.5 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm font-mono" />
         </div>
         <button type="submit" className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg">Apply</button>
+        {/* Hides gangs whose orders have all shipped — the working set is the
+            handful still open. */}
+        <label className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg cursor-pointer">
+          <input type="checkbox" checked={filters.unshipped}
+            onChange={e => setFilters(f => ({ ...f, unshipped: e.target.checked, page: 1 }))}
+            className="accent-orange-500" />
+          <span className="text-neutral-600">Còn đơn chưa ship</span>
+        </label>
         <button type="button" onClick={clearFilters} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
         <button
           type="button"
@@ -1612,7 +1646,17 @@ function ManageTab() {
                   {g.first_system_id}{g.first_system_id !== g.last_system_id && <> → {g.last_system_id}</>}
                 </td>
                 <td className="px-3 py-2 font-mono text-xs">{g.line_id || '-'}</td>
-                <td className="px-3 py-2 text-right">{g.orders_count}</td>
+                <td className="px-3 py-2 text-right">
+                  {g.orders_count}
+                  {/* Still-open share of the gang. Silent once everything has
+                      shipped — a zero on every finished row is noise. */}
+                  {g.unshipped_orders_count > 0 && (
+                    <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold"
+                      title={`${g.unshipped_orders_count}/${g.orders_count} đơn chưa shipped`}>
+                      {g.unshipped_orders_count} chưa ship
+                    </span>
+                  )}
+                </td>
                 <td className="px-3 py-2 text-right">{g.metas_count}</td>
                 <td className="px-3 py-2 text-xs">{g.creator?.name || '-'}</td>
                 <td className="px-3 py-2 text-xs text-neutral-500">{new Date(g.created_at).toLocaleString()}</td>
@@ -1649,6 +1693,14 @@ function ManageTab() {
                       title="Delete _qr metas for orders in this gang; cron rebuilds from mockup URLs"
                     >
                       {reconvertingId === g.id ? 'Reconverting…' : 'Reconvert'}
+                    </button>
+                    <button
+                      onClick={() => handleDeleteGang(g)}
+                      disabled={deletingId === g.id}
+                      className="text-xs text-red-500 hover:text-red-600 disabled:opacity-40"
+                      title="Xoá bản ghi gang này. Đơn và meta _qr giữ nguyên production."
+                    >
+                      {deletingId === g.id ? 'Đang xoá…' : 'Delete'}
                     </button>
                   </div>
                 </td>
