@@ -53,7 +53,11 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="orders" element={<Orders />} />
           <Route path="tickets" element={<Tickets />} />
-          <Route path="gangsheet" element={<Gangsheet />} />
+          {/* Both paths render the SAME component in the same Outlet slot, so
+              without distinct keys React reconciles instead of remounting and
+              the screen keeps the other channel's orders, filters and page. */}
+          <Route path="gangsheet" element={<Gangsheet key="gangsheet-normal" />} />
+          <Route path="gangsheet-fpt" element={<Gangsheet key="gangsheet-fpt" source="fpt" />} />
           <Route path="reprint" element={<Reprint />} />
           <Route path="reasons" element={<Reasons />} />
         </Route>

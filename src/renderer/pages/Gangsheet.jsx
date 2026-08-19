@@ -490,7 +490,10 @@ function loadDefaultBatch() {
 
 // ─────────────────────────────── page shell ───────────────────────────────
 
-export default function Gangsheet() {
+// `source` picks the order channel: 'normal' (Gangsheet menu) or 'fpt'
+// (Gangsheet FPT). The two never mix — a sheet is composed from one channel's
+// orders and listed on its own screen, matching bullstart-app.
+export default function Gangsheet({ source = 'normal' }) {
   const [tab, setTab] = useState('compose');
   return (
     <div className="p-6 space-y-4">
@@ -506,17 +509,17 @@ export default function Gangsheet() {
         <TabBtn active={tab === 'manage'} onClick={() => setTab('manage')}>Manage</TabBtn>
       </div>
 
-      {tab === 'compose' && <ComposeTab />}
-      {tab === 'find' && <FindTab />}
-      {tab === 'reconvert' && <ReconvertTab />}
-      {tab === 'manage' && <ManageTab />}
+      {tab === 'compose' && <ComposeTab source={source} />}
+      {tab === 'find' && <FindTab source={source} />}
+      {tab === 'reconvert' && <ReconvertTab source={source} />}
+      {tab === 'manage' && <ManageTab source={source} />}
     </div>
   );
 }
 
 // ─────────────────────────────── Compose ───────────────────────────────
 
-function ComposeTab() {
+function ComposeTab({ source = 'normal' }) {
   const [orders, setOrders] = useState([]);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchSize, setBatchSize] = useState(loadDefaultBatch);
@@ -597,7 +600,9 @@ function ComposeTab() {
   const fetchOrders = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/partner/orders');
+      const res = await api.get('/partner/orders', {
+        params: source !== 'normal' ? { source } : {},
+      });
       const list = res.data.orders || [];
       setOrders(list);
       setSelectedIds(new Set(list.map(o => o.id)));
@@ -689,6 +694,7 @@ function ComposeTab() {
 
         // 2) Record on hub (auto-assigned back to this partner).
         const res = await api.post('/partner/gangsheets', {
+          source,
           filename: built.filename,
           file_url: publicUrl,
           png_urls: pngUrls,
@@ -1016,7 +1022,7 @@ function ComposeTab() {
  * The lookup is scoped server-side to this partner: an id belonging to someone
  * else comes back under `missing`, never as data.
  */
-function FindTab() {
+function FindTab({ source = 'normal' }) {
   const [input, setInput] = useState('');
   const [searching, setSearching] = useState(false);
   const [orders, setOrders] = useState([]);
@@ -1045,7 +1051,9 @@ function FindTab() {
     if (ids.length === 0) { alert('Dán ít nhất một system_id'); return; }
     setSearching(true);
     try {
-      const res = await api.post('/partner/orders/lookup', { system_ids: ids });
+      const res = await api.post('/partner/orders/lookup', {
+        system_ids: ids, ...(source !== 'normal' ? { source } : {}),
+      });
       setOrders(res.data.orders || []);
       setMissing(res.data.missing || []);
       setSelectedIds(new Set((res.data.orders || []).map(o => o.id)));
@@ -1101,6 +1109,7 @@ function FindTab() {
         const pdfUrls = await uploadGangPdfs(built, creds);
 
         const res = await api.post('/partner/gangsheets', {
+          source,
           filename: built.filename,
           file_url: pdfUrls[0],
           png_urls: pngUrls,
@@ -1242,7 +1251,7 @@ function FindTab() {
   );
 }
 
-function ReconvertTab() {
+function ReconvertTab({ source = 'normal' }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -1251,7 +1260,9 @@ function ReconvertTab() {
   const fetchOrders = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/partner/orders');
+      const res = await api.get('/partner/orders', {
+        params: source !== 'normal' ? { source } : {},
+      });
       setOrders(res.data.orders || []);
       setSelectedIds(new Set());
     } finally { setLoading(false); }
@@ -1343,7 +1354,7 @@ function ReconvertTab() {
 
 // ─────────────────────────────── Manage (assigned list) ───────────────────────────────
 
-function ManageTab() {
+function ManageTab({ source = 'normal' }) {
   const [filters, setFilters] = useState({ date_from: '', date_to: '', line_id: '', page_format: '', unshipped: false, page: 1 });
   const [list, setList] = useState({ data: [], current_page: 1, last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -1374,6 +1385,7 @@ function ManageTab() {
     if (filters.line_id) params.line_id = filters.line_id;
     if (filters.page_format) params.page_format = filters.page_format;
     if (filters.unshipped) params.unshipped = 1;
+    if (source !== 'normal') params.source = source;
     api.get('/partner/gangsheets', { params })
       .then(res => { setList(res.data); setSubTab('all'); setSelectedIds(new Set()); })
       .finally(() => setLoading(false));

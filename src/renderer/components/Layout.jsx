@@ -8,6 +8,7 @@ const navItems = [
   { path: '/orders',    label: 'Orders', icon: '◈' },
   { path: '/tickets',   label: 'Ticket', icon: '💬' },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦' },
+  { path: '/gangsheet-fpt', label: 'Gangsheet FPT', icon: '▦' },
   { path: '/reprint',   label: 'Reprint', icon: '🔁' },
   { path: '/reasons',   label: 'Reasons', icon: '🏷' },
 ];
