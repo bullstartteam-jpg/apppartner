@@ -30,6 +30,13 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard label="Doanh thu được chia" value={`$${Number(stats.revenue_total || 0).toFixed(2)}`} color="green" loading={loading}
           sub={`${Number(stats.revenue_orders || 0).toLocaleString()} đơn · đã chốt $${Number(stats.revenue_locked || 0).toFixed(2)}`} />
+        {/* Whose payment this is has to be said out loud: the amounts are the
+            partner's share, but "paid" refers to the customer settling the
+            order, not to the partner having been paid. */}
+        <StatCard label="Đơn khách đã thanh toán" value={`$${Number(stats.revenue_paid || 0).toFixed(2)}`} color="green" loading={loading}
+          sub={`${Number(stats.orders_paid || 0).toLocaleString()} đơn · phần chia của bạn`} />
+        <StatCard label="Đơn khách chưa thanh toán" value={`$${Number(stats.revenue_unpaid || 0).toFixed(2)}`} color="amber" loading={loading}
+          sub={`${Number(stats.orders_unpaid || 0).toLocaleString()} đơn · phần chia của bạn`} />
         <StatCard label="Tổng gangsheet" value={stats.total_gangsheets} color="orange" loading={loading} />
         <StatCard label="Tổng đơn" value={Number(stats.total_orders).toLocaleString()} color="neutral" loading={loading} sub="đơn trong các gang được phân quyền" />
         <StatCard label="Tổng design (_qr)" value={Number(stats.total_metas).toLocaleString()} color="neutral" loading={loading} />
@@ -50,6 +57,7 @@ function StatCard({ label, value, color, loading, sub }) {
     neutral: 'bg-white text-neutral-800',
     orange:  'bg-orange-50 text-orange-700 border-orange-200',
     green:   'bg-emerald-50 text-emerald-700 border-emerald-200',
+    amber:   'bg-amber-50 text-amber-700 border-amber-200',
   }[color] || 'bg-white text-neutral-800';
   return (
     <div className={`rounded-xl border border-neutral-200 p-4 shadow-sm ${palette}`}>
