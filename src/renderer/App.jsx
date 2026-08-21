@@ -3,6 +3,7 @@ import { useAuth } from './contexts/AuthContext';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Payouts from './pages/Payouts';
 import Orders from './pages/Orders';
 import Tickets from './pages/Tickets';
 import Gangsheet from './pages/Gangsheet';
@@ -52,6 +53,7 @@ export default function App() {
         <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route index element={<Dashboard />} />
           <Route path="orders" element={<Orders />} />
+          <Route path="payouts" element={<Payouts />} />
           <Route path="tickets" element={<Tickets />} />
           {/* Both paths render the SAME component in the same Outlet slot, so
               without distinct keys React reconciles instead of remounting and

@@ -6,6 +6,7 @@ import logo from '../assets/logo.png';
 const navItems = [
   { path: '/',          label: 'Dashboard', icon: '◉' },
   { path: '/orders',    label: 'Orders', icon: '◈' },
+  { path: '/payouts',   label: 'Thanh toán', icon: '💸' },
   { path: '/tickets',   label: 'Ticket', icon: '💬' },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦' },
   { path: '/gangsheet-fpt', label: 'Gangsheet FPT', icon: '▦' },
