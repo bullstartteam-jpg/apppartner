@@ -20,6 +20,25 @@ const METHOD_LABELS = {
 export default function Payouts() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [confirming, setConfirming] = useState(null);
+
+  /**
+   * Tell admin the money arrived. Recording a payment and receiving it are two
+   * different facts — without this, a transfer that failed or went to the wrong
+   * account looks exactly like one that landed.
+   */
+  const confirmReceipt = async (row) => {
+    if (!confirm(`Xác nhận bạn đã nhận ${fmt$(row.amount)}?`)) return;
+    const note = prompt('Ghi chú (không bắt buộc):', '') ?? '';
+    setConfirming(row.id);
+    try {
+      const res = await api.post(`/partner/payouts/${row.id}/confirm`, { note: note || null });
+      alert(res.data?.message || 'Đã xác nhận');
+      load();
+    } catch (err) {
+      alert(err?.response?.data?.message || 'Xác nhận thất bại');
+    } finally { setConfirming(null); }
+  };
 
   const load = () => {
     setLoading(true);
@@ -52,6 +71,13 @@ export default function Payouts() {
           sub={Number(data?.owed) < 0 ? 'đã nhận trước phần này' : 'chưa nhận'} />
       </div>
 
+      {rows.some(r => !r.confirmed_at) && (
+        <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2">
+          Có {rows.filter(r => !r.confirmed_at).length} giao dịch chưa được bạn xác nhận — kiểm tra tài khoản
+          rồi bấm <b>Xác nhận đã nhận</b> ở bảng dưới.
+        </p>
+      )}
+
       {/* Shipped with no amount set yet — owed something, but not counted in
           "Đã tính" until admin prices it. Saying so beats a total that quietly
           leaves work out. */}
@@ -80,6 +106,7 @@ export default function Payouts() {
                 <th className="text-left px-3 py-2">Kỳ</th>
                 <th className="text-left px-3 py-2">Ghi chú</th>
                 <th className="text-right px-3 py-2">Còn lại sau</th>
+                <th className="text-left px-3 py-2">Xác nhận</th>
               </tr>
             </thead>
             <tbody>
@@ -94,6 +121,18 @@ export default function Payouts() {
                   </td>
                   <td className="px-3 py-2 text-neutral-500 text-xs">{row.note || '—'}</td>
                   <td className="px-3 py-2 text-right text-neutral-500 text-xs">{fmt$(row.balance_after)}</td>
+                  <td className="px-3 py-2 text-xs">
+                    {row.confirmed_at ? (
+                      <span className="text-emerald-700" title={row.confirmed_note || ''}>
+                        ✓ đã nhận · {new Date(row.confirmed_at).toLocaleDateString()}
+                      </span>
+                    ) : (
+                      <button onClick={() => confirmReceipt(row)} disabled={confirming === row.id}
+                        className="px-2 py-1 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white rounded">
+                        {confirming === row.id ? 'Đang gửi…' : 'Xác nhận đã nhận'}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
