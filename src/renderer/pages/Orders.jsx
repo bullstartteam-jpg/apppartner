@@ -10,7 +10,7 @@ import {
 // Orders assigned to this partner. Prices and the seller's identity are
 // stripped by the API (PartnerController::orderIndex / showOrder), so nothing
 // on this screen has to remember to hide them.
-const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled'];
+const STATUS_MAP = ['new_order', 'producing', 'wrongsize', 'fixed', 'reprint', 'onhold', 'shipped', 'cancelled', 'resend'];
 
 // Same palette and the same option list as the admin Orders page, so a status
 // reads identically wherever it is seen.
@@ -139,6 +139,37 @@ export default function Orders() {
   const [ticketFor, setTicketFor] = useState(null);
   // Which paste-a-list filter is open: 'system_ids' | 'ref_ids' | null.
   const [listModal, setListModal] = useState(null);
+  const [selected, setSelected] = useState([]);
+
+  const orders = list.data || [];
+
+  const toggleSelect = (id) => setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  const toggleSelectAll = () => {
+    if (selected.length === orders.length && orders.length > 0) setSelected([]);
+    else setSelected(orders.map(o => o.id));
+  };
+
+  const copyToClipboard = async (text, label, count) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(`Copied ${count} ${label}`, { title: 'Clipboard', kind: 'success' });
+    } catch { notify('Copy failed', { title: 'Clipboard', kind: 'error' }); }
+  };
+  const handleCopyIds = () => {
+    const ids = orders.filter(o => selected.includes(o.id)).map(o => o.system_id).filter(Boolean);
+    if (!ids.length) return;
+    copyToClipboard(ids.join('\n'), `system ID${ids.length > 1 ? 's' : ''}`, ids.length);
+  };
+  const handleCopyRefs = () => {
+    const refs = orders.filter(o => selected.includes(o.id)).map(o => o.ref_id).filter(Boolean);
+    if (!refs.length) return notify('Không có ref_id nào.', { title: 'Nothing to copy' });
+    copyToClipboard(refs.join('\n'), `ref_id${refs.length > 1 ? 's' : ''}`, refs.length);
+  };
+  const handleCopyTrackings = () => {
+    const tracks = orders.filter(o => selected.includes(o.id)).map(o => o.tracking_id).filter(Boolean);
+    if (!tracks.length) return notify('Không có tracking_id nào.', { title: 'Nothing to copy' });
+    copyToClipboard(tracks.join('\n'), `tracking_id${tracks.length > 1 ? 's' : ''}`, tracks.length);
+  };
 
   const fetchList = async () => {
     setLoading(true);
@@ -149,6 +180,7 @@ export default function Orders() {
       }
       const res = await api.get('/partner/orders/list', { params });
       setList(res.data);
+      setSelected([]);
     } catch (err) {
       notify(err?.response?.data?.message || 'Không tải được đơn', { title: 'Orders', kind: 'error' });
     } finally { setLoading(false); }
@@ -231,10 +263,22 @@ export default function Orders() {
           className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-sm rounded-lg">Clear</button>
       </form>
 
+      {selected.length > 0 && (
+        <div className="bg-white rounded-xl border border-neutral-200 p-3 shadow-sm flex items-center gap-2 flex-wrap">
+          <span className="text-neutral-500 text-sm">{selected.length} selected</span>
+          <button onClick={handleCopyIds} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg">Copy IDs</button>
+          <button onClick={handleCopyRefs} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg">Copy Refs</button>
+          <button onClick={handleCopyTrackings} className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 text-xs rounded-lg">Copy Trackings</button>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl border border-neutral-200 shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-neutral-500 text-xs border-b border-neutral-200 bg-[#faf8f6]">
+              <th className="py-2 px-3 text-left w-8">
+                <input type="checkbox" onChange={toggleSelectAll} checked={selected.length === orders.length && orders.length > 0} className="accent-orange-500" />
+              </th>
               <th className="py-2 px-3 text-left">System ID</th>
               <th className="py-2 px-3 text-left">Ref ID</th>
               <th className="py-2 px-3 text-left">Sản phẩm</th>
@@ -247,12 +291,15 @@ export default function Orders() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={8} className="py-6 text-center text-neutral-400">Đang tải…</td></tr>
-            ) : list.data.length === 0 ? (
-              <tr><td colSpan={8} className="py-6 text-center text-neutral-400">Không có đơn nào</td></tr>
-            ) : list.data.map(o => (
+              <tr><td colSpan={9} className="py-6 text-center text-neutral-400">Đang tải…</td></tr>
+            ) : orders.length === 0 ? (
+              <tr><td colSpan={9} className="py-6 text-center text-neutral-400">Không có đơn nào</td></tr>
+            ) : orders.map(o => (
               <tr key={o.id} onClick={() => setDetailId(o.id)}
                 className="border-b border-neutral-100 hover:bg-orange-50/40 cursor-pointer">
+                <td className="py-2 px-3" onClick={e => e.stopPropagation()}>
+                  <input type="checkbox" checked={selected.includes(o.id)} onChange={() => toggleSelect(o.id)} className="accent-orange-500" />
+                </td>
                 <td className="py-2 px-3 font-mono text-orange-500 text-xs">
                   <span className="inline-flex items-center gap-1">
                     {o.system_id}
