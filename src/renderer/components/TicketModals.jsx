@@ -68,6 +68,20 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
     } finally { setBusy(false); }
   };
 
+  const toggleSolved = async () => {
+    const solved = ticket.status !== 2;
+    setBusy(true);
+    try {
+      await api.post(`/tickets/${id}/solve`, { solved });
+      await load();
+      onChanged?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Không đổi được trạng thái', { title: 'Ticket', kind: 'error' });
+    } finally { setBusy(false); }
+  };
+
+  const copyText = (text, label) => { navigator.clipboard.writeText(text); notify(`Đã copy ${label}`, { kind: 'success' }); };
+
   // Opening message is tickets.content; ticket_items holds only replies.
   const thread = ticket
     ? [{ id: 'root', content: ticket.content, sender: ticket.creator, created_at: ticket.created_at }, ...(ticket.items || [])]
@@ -78,8 +92,12 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
       wide
       title={ticket?.subject || 'Đang tải…'}
       sub={ticket && (
-        <div className="text-xs text-neutral-500 flex items-center gap-2 mt-0.5 flex-wrap">
+        <div className="text-xs text-neutral-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
           <span className="font-mono text-orange-500">{ticket.order?.system_id || `#${ticket.order_id}`}</span>
+          <button title="Copy System ID" onClick={() => copyText(ticket.order?.system_id || String(ticket.order_id), 'System ID')}
+            className="text-neutral-400 hover:text-orange-500 leading-none select-none">⎘</button>
+          <button title="Copy Ticket ID" onClick={() => copyText(String(ticket.id), `ticket #${ticket.id}`)}
+            className="text-neutral-300 hover:text-neutral-600 leading-none font-mono select-none">#{ticket.id}</button>
           <span>·</span>
           <span>{TICKET_PLATFORM[ticket.platform]}</span>
           <span>·</span>
@@ -91,7 +109,15 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
         <div className="border-t border-neutral-200 p-3 space-y-2">
           <textarea value={reply} onChange={e => setReply(e.target.value)} rows={3} placeholder="Trả lời…"
             className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm resize-y" />
-          <div className="flex justify-end">
+          <div className="flex justify-between gap-2">
+            <button onClick={toggleSolved} disabled={busy}
+              className={`px-3 py-1.5 text-sm rounded-lg disabled:opacity-40 ${
+                ticket.status === 2
+                  ? 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
+                  : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+              }`}>
+              {ticket.status === 2 ? 'Mở lại' : 'Đánh dấu xong'}
+            </button>
             <button onClick={send} disabled={busy || !reply.trim()}
               className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm rounded-lg">
               {busy ? 'Đang gửi…' : 'Gửi'}
@@ -115,7 +141,8 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
           ))}
           {ticket.status === 2 && (
             <p className="text-xs text-neutral-500">
-              Ticket đã được đánh dấu xong · {fmtTime(ticket.solved_at)}. Gửi tin mới sẽ mở lại ticket.
+              Đã xong bởi <b>{ticket.solver?.name || '—'}</b> · {fmtTime(ticket.solved_at)}.
+              Gửi tin mới sẽ mở lại ticket.
             </p>
           )}
         </>

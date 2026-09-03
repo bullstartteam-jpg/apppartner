@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import api from '../services/api';
 import { notify } from '../components/Dialog';
 import { UrlPreview, PreviewModal } from '../components/Preview';
@@ -132,7 +133,9 @@ function TicketDot({ order }) {
 }
 
 export default function Orders() {
-  const [filters, setFilters] = useState(FILTER_DEFAULTS);
+  const location = useLocation();
+  const initSid = location.state?.initSystemId || '';
+  const [filters, setFilters] = useState(() => initSid ? { ...FILTER_DEFAULTS, system_id: initSid } : FILTER_DEFAULTS);
   const [list, setList] = useState({ data: [], last_page: 1, total: 0 });
   const [loading, setLoading] = useState(true);
   const [detailId, setDetailId] = useState(null);
