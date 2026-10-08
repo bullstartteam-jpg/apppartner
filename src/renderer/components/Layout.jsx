@@ -10,6 +10,7 @@ const navItems = [
   { path: '/tickets',   label: 'Ticket', icon: '💬' },
   { path: '/gangsheet', label: 'Gangsheet', icon: '▦' },
   { path: '/gangsheet-fpt', label: 'Gangsheet FPT', icon: '▦' },
+  { path: '/sticker-sheets', label: 'Sticker Sheet', icon: '🧩' },
   { path: '/reprint',   label: 'Reprint', icon: '🔁' },
   { path: '/reasons',   label: 'Reasons', icon: '🏷' },
 ];

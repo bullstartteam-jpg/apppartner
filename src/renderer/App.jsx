@@ -7,6 +7,7 @@ import Payouts from './pages/Payouts';
 import Orders from './pages/Orders';
 import Tickets from './pages/Tickets';
 import Gangsheet from './pages/Gangsheet';
+import StickerSheets from './pages/StickerSheets';
 import Reprint from './pages/Reprint';
 import Reasons from './pages/Reasons';
 import { DialogHost } from './components/Dialog';
@@ -60,6 +61,7 @@ export default function App() {
               the screen keeps the other channel's orders, filters and page. */}
           <Route path="gangsheet" element={<Gangsheet key="gangsheet-normal" />} />
           <Route path="gangsheet-fpt" element={<Gangsheet key="gangsheet-fpt" source="fpt" />} />
+          <Route path="sticker-sheets" element={<StickerSheets />} />
           <Route path="reprint" element={<Reprint />} />
           <Route path="reasons" element={<Reasons />} />
         </Route>
