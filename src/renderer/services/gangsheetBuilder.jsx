@@ -232,6 +232,44 @@ export async function rasterizeGangPdf(url, { onProgress } = {}) {
  * available (no CORS, no renderer memory copy of the response), falling back
  * to fetch() in the browser. Exported for the Manage tab's zip download.
  */
+/**
+ * Sticker Sheet gang without re-rendering. Such a gang is ONE _qr on one page
+ * at the _qr's own size with its transparency kept — byte for byte the _qr PNG
+ * the converter already made (11×17 @300dpi, 5–10 MB). So the file is fetched
+ * and handed on as the gang's page; no decode, no 17 MP re-encode, no PDF.
+ * Returns the same shape as buildGangsheetForChunk (pageBlobs = [the PNG]),
+ * or null when the _qr is not a PNG — the caller then renders normally.
+ */
+export async function buildStickerPassthrough(orders, { linePrefix, includeProduced = false, nameSuffix = '', seq = 0 } = {}) {
+  const records = flattenQrMetas(orders, { includeProduced });
+  if (records.length !== 1) return null;
+  const { order, meta } = records[0];
+  const bytes = await fetchImageBytes(meta.value);
+  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
+  if (!isPng) return null;
+  const filename = gangsheetFilename({
+    linePrefix: (linePrefix || '').toUpperCase(),
+    firstSid: order.system_id,
+    lastSid: order.system_id,
+    ordersCount: 1,
+    metasCount: 1,
+    suffix: nameSuffix,
+    seq,
+  });
+  return {
+    blob: null,
+    pageBlobs: [new Blob([bytes], { type: 'image/png' })],
+    filename,
+    linePrefix,
+    firstSid: order.system_id,
+    lastSid: order.system_id,
+    ordersInChunk: 1,
+    metasUsed: 1,
+    orderIds: [order.id],
+    metaIds: [meta.id],
+  };
+}
+
 export function fetchFileBytes(url) {
   return fetchImageBytes(url);
 }
@@ -329,7 +367,7 @@ function canvasToBlob(canvas, type = 'image/png') {
  *   { blob, filename, linePrefix, firstSid, lastSid, ordersInChunk, metasUsed,
  *     orderIds, metaIds }
  */
-export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0, pageFormat = 'letter', collectPages = false } = {}) {
+export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, includeProduced = false, nameSuffix = '', seq = 0, pageFormat = 'letter', collectPages = false, transparent = false } = {}) {
   if (!orders.length) throw new Error('Empty chunk');
 
   const records = flattenQrMetas(orders, { includeProduced });
@@ -371,15 +409,19 @@ export async function buildGangsheetForChunk(orders, { onProgress, linePrefix, i
     const img = await loadImageFromBytes(bytes);
 
     if (native) {
-      // Page = the design's own size; draw 1:1 on a white backing, no marks/gap.
+      // Page = the design's own size; draw 1:1, no marks/gap. White backing
+      // unless `transparent` (Sticker Sheet): then the page keeps the _qr's
+      // own alpha, so only the design + barcode panel print.
       const w = img.naturalWidth || img.width;
       const h = img.naturalHeight || img.height;
       const c = document.createElement('canvas');
       c.width = w;
       c.height = h;
       const cx = c.getContext('2d');
-      cx.fillStyle = '#ffffff';
-      cx.fillRect(0, 0, w, h);
+      if (!transparent) {
+        cx.fillStyle = '#ffffff';
+        cx.fillRect(0, 0, w, h);
+      }
       cx.drawImage(img, 0, 0, w, h);
 
       const blob = await canvasToBlob(c, 'image/png');
