@@ -17,6 +17,19 @@ import { createStickerGangs } from './Gangsheet';
 const STATUS_LABEL = { 0: 'New', 1: 'Processing', 2: 'Wrong size', 3: 'Fixed', 4: 'Reprint', 5: 'On hold', 6: 'Shipped', 7: 'Cancelled', 8: 'Resend' };
 const OPEN_STATUSES = [0, 1, 2, 3, 4, 5, 8];   // default: not shipped / cancelled
 
+// "Tìm System ID": one or many IDs (comma / space / newline), substring match.
+const parseSearch = (q) => String(q || '').split(/[\s,;]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
+const orderMatches = (terms) => (o) => !terms.length || terms.some(t => String(o.system_id || '').toUpperCase().includes(t));
+
+// A single-tab group narrowed to the searched orders. Its analysis ids follow,
+// so "Tạo gang" / "Chia partner" act on just those orders.
+const narrowGroup = (g, match, active) => {
+  if (!active) return g;
+  const orders = g.orders.filter(match);
+  const ids = orders.flatMap(o => o.analysis_ids || []);
+  return { ...g, orders, analysis_ids: ids.length ? ids : g.analysis_ids };
+};
+
 // Ganged state of an order / design: all its _qr on a gang, some, or none.
 const gangState = (x) => (!x?.qr_total ? 'none' : x.qr_ganged >= x.qr_total ? 'done' : x.qr_ganged > 0 ? 'part' : 'none');
 
@@ -49,6 +62,10 @@ export default function StickerSheets() {
   const [ganging, setGanging] = useState(null);   // { label, done, total, system_id }
   const [zoom, setZoom] = useState(null);         // design image in the lightbox
   const [hideGanged, setHideGanged] = useState(false);
+  const [search, setSearch] = useState('');
+  const terms = parseSearch(search);
+  const match = orderMatches(terms);
+  const searching = terms.length > 0;
 
   const load = (st = statuses, m = mode) => {
     setData(null);
@@ -129,7 +146,9 @@ export default function StickerSheets() {
         <span className="mx-1 text-neutral-300">|</span>
         <button onClick={() => setPreset(OPEN_STATUSES)} className="px-2 py-1 text-xs text-neutral-600 underline">Đang làm</button>
         <button onClick={() => setPreset(Object.keys(STATUS_LABEL).map(Number))} className="px-2 py-1 text-xs text-neutral-600 underline">Tất cả</button>
-        <label className="ml-auto flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer">
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Tìm System ID (nhiều, cách nhau dấu phẩy)"
+          className="ml-auto w-64 px-2 py-1 bg-[#faf8f6] border border-neutral-200 rounded text-xs font-mono" />
+        <label className="flex items-center gap-1.5 text-xs text-neutral-600 cursor-pointer">
           <input type="checkbox" checked={hideGanged} onChange={e => setHideGanged(e.target.checked)} className="accent-orange-500" />
           Ẩn đơn đã gang
         </label>
@@ -159,16 +178,19 @@ export default function StickerSheets() {
 
           {mode === 'single' && (
             <div className="space-y-2">
-              {[...data.groups, ...data.unmatched].map(g => (
+              {[...data.groups, ...data.unmatched].map(g0 => narrowGroup(g0, match, searching)).filter(g => !searching || g.orders.length).map(g => (
                 <SingleCard key={g.key} g={g} onZoom={setZoom} hideGanged={hideGanged}
                   action={<GangButton busy={!!ganging} onClick={() => makeGangs(g.analysis_ids, g.label)} />} />
               ))}
               {data.groups.length + data.unmatched.length === 0 && <Empty />}
+              {searching && ![...data.groups, ...data.unmatched].some(g => g.orders.some(match)) && (
+                <p className="text-sm text-neutral-500">Không tìm thấy System ID này trong các trạng thái đang chọn.</p>
+              )}
             </div>
           )}
 
           {mode === 'multi' && (
-            <MultiOrders orders={(data.orders || []).filter(o => !hideGanged || gangState(o) !== 'done')} options={data.design_options || []}
+            <MultiOrders orders={(data.orders || []).filter(o => (!hideGanged || gangState(o) !== 'done') && match(o))} options={data.design_options || []}
               design={design} onDesign={setDesign} onZoom={setZoom} onGang={makeGangs} busy={!!ganging} />
           )}
         </>
