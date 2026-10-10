@@ -3,7 +3,7 @@ import api from '../services/api';
 import ImagePicker from '../components/ImagePicker';
 import { notify } from '../components/Dialog';
 import {
-  buildGangsheetForChunk, buildStickerPassthrough, buildTiledGangsheet, chunkArray, flattenQrMetas, isQrKey,
+  buildGangsheetForChunk, buildStickerPassthrough, buildTiledGangsheet, buildDieCutGangsheet, chunkArray, flattenQrMetas, isQrKey,
   getGangPageFormat, setGangPageFormat,
   rasterizeGangPdf, fetchFileBytes,
 } from '../services/gangsheetBuilder';
@@ -264,12 +264,17 @@ function splitOrderPerQr(order, { includeProduced = false } = {}) {
 function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includeProduced = false } = {}) {
   const cardOrders = [];
   const stickerOrders = [];
+  const dieCutOrders = [];
   const nativeOrders = [];
   const normalOrders = [];
   for (const o of orders) {
     const layout = orderConvertLayout(o, layoutMap);
     if (layout === 'outside') cardOrders.push(o);
-    else if (layout === 'sticker_sheet') stickerOrders.push(o);
+    // Sticker Sheet / Kindle Insert: the _qr is the finished piece — one
+    // gang per _qr, PNG passed through at its own size.
+    else if (layout === 'sticker_sheet' || layout === 'kindle_insert') stickerOrders.push(o);
+    // Die Cut ('native_band'): Letter sheet, each _qr + a design-only copy.
+    else if (layout === 'native_band') dieCutOrders.push(o);
     else if (orderIsNative(o)) nativeOrders.push(o);
     else normalOrders.push(o);
   }
@@ -279,9 +284,29 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
   // Sticker Sheet (same as bullstart-app): every _qr is a gang of its own — one
   // transparent PNG page at the _qr's own size. batchSize does not apply.
   for (const o of stickerOrders) {
-    const suffix = slugifyAccessory(orderOrderType(o)) || 'sticker-sheet';
+    const suffix = slugifyAccessory(orderOrderType(o))
+      || orderConvertLayout(o, layoutMap).replace('_', '-');
     for (const single of splitOrderPerQr(o, { includeProduced })) {
       chunks.push({ chunk: [single], suffix, tiled: false, native: true, sticker: true });
+    }
+  }
+
+  // Die Cut (same as bullstart-app): order_type × size, 3 _qr per sheet.
+  const dieCutGroups = new Map();
+  for (const o of dieCutOrders) {
+    const ot = orderOrderType(o) || 'die-cut';
+    const sz = normSize(o.items?.[0]?.product_variant?.size) || '';
+    const key = `${ot}||${sz}`;
+    if (!dieCutGroups.has(key)) dieCutGroups.set(key, { ot, sz, orders: [] });
+    dieCutGroups.get(key).orders.push(o);
+  }
+  for (const [, g] of dieCutGroups) {
+    const tag = [slugifyAccessory(g.ot) || 'die-cut', g.sz].filter(Boolean).join('_');
+    // 4x4 / 5x5 don't fit 3 pairs on Letter: 11×17 sheets of 2 _qr, so a
+    // 3-_qr gang splits over 2 sheets.
+    const large = DIECUT_LARGE_SIZES.has(g.sz);
+    for (const chunk of chunkCardOrders(g.orders, 3, includeProduced)) {
+      chunks.push({ chunk, suffix: tag, dieCut: true, large });
     }
   }
 
@@ -334,11 +359,15 @@ function routeOrdersToChunks(orders, { layoutMap, groupBy, batchSize, includePro
   return chunks;
 }
 
-function chunkPageFormat({ tiled, native }) {
-  return tiled ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
+// Die Cut sizes ganged on 11×17 (2 _qr per sheet) instead of Letter.
+const DIECUT_LARGE_SIZES = new Set(['4x4', '5x5']);
+
+function chunkPageFormat({ tiled, native, dieCut, large }) {
+  if (dieCut && large) return 'tabloid';
+  return (tiled || dieCut) ? 'letter_6up' : (native ? 'native' : getGangPageFormat());
 }
 
-async function buildChunkPdf({ chunk, suffix, tiled, native, sticker }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
+async function buildChunkPdf({ chunk, suffix, tiled, native, sticker, dieCut, large }, { linePrefix, seq, includeProduced = false, collectPages = false, onProgress } = {}) {
   const opts = { linePrefix, nameSuffix: suffix, seq, includeProduced, collectPages, onProgress };
   // Sticker Sheet: the gang page IS the _qr PNG — pass the file through
   // instead of re-rendering it (falls back when the _qr is not a PNG).
@@ -346,6 +375,7 @@ async function buildChunkPdf({ chunk, suffix, tiled, native, sticker }, { linePr
     const fast = await buildStickerPassthrough(chunk, opts);
     if (fast) { onProgress?.({ done: 1, total: 1 }); return fast; }
   }
+  if (dieCut) return buildDieCutGangsheet(chunk, { ...opts, large });
   return tiled
     ? buildTiledGangsheet(chunk, opts)
     : buildGangsheetForChunk(chunk, { ...opts, pageFormat: chunkPageFormat({ tiled, native }), transparent: !!sticker });
