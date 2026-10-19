@@ -37,10 +37,8 @@ export default function Dashboard() {
           sub={`${Number(stats.orders_paid || 0).toLocaleString()} đơn · phần chia của bạn`} />
         <StatCard label="Đơn khách chưa thanh toán" value={`$${Number(stats.revenue_unpaid || 0).toFixed(2)}`} color="amber" loading={loading}
           sub={`${Number(stats.orders_unpaid || 0).toLocaleString()} đơn · phần chia của bạn`} />
-        {stats.push_scan_orders > 0 && (
-          <StatCard label="Đã trừ phí push scan" value={`−$${Number(stats.push_scan_deducted || 0).toFixed(2)}`} color="red" loading={loading}
-            sub={`${Number(stats.push_scan_orders).toLocaleString()} đơn · đã trừ trong doanh thu được chia`} />
-        )}
+        <StatCard label="Đã trừ phí push scan" value={`−$${Number(stats.push_scan_deducted || 0).toFixed(2)}`} color="red" loading={loading}
+          sub={`${Number(stats.push_scan_orders || 0).toLocaleString()} đơn · đã trừ trong doanh thu được chia`} />
         <StatCard label="Tổng gangsheet" value={stats.total_gangsheets} color="orange" loading={loading} />
         <StatCard label="Tổng đơn" value={Number(stats.total_orders).toLocaleString()} color="neutral" loading={loading} sub="đơn trong các gang được phân quyền" />
         <StatCard label="Tổng design (_qr)" value={Number(stats.total_metas).toLocaleString()} color="neutral" loading={loading} />
