@@ -295,8 +295,10 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
                 <span className="font-medium text-neutral-700 truncate">{m.sender?.name || '—'}</span>
                 <span className="shrink-0 flex items-center gap-2">
                   {fmtTime(m.created_at)}
-                  {m.id !== 'root' && isMine(m.send_by) && (
-                    <button onClick={() => deleteItem(m.id)} disabled={busy} title="Xoá tin nhắn" aria-label="Xoá tin nhắn"
+                  {(m.id === 'root' ? isMine(ticket.created_by) : isMine(m.send_by)) && (
+                    <button onClick={() => (m.id === 'root' ? deleteTicket() : deleteItem(m.id))} disabled={busy}
+                      title={m.id === 'root' ? 'Xoá ticket (tin mở đầu là ticket)' : 'Xoá tin nhắn'}
+                      aria-label={m.id === 'root' ? 'Xoá ticket' : 'Xoá tin nhắn'}
                       className="p-1 -m-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:pointer-events-none">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

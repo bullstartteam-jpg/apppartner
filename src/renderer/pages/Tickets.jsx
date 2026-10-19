@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
-import { notify } from '../components/Dialog';
+import { notify, askConfirm } from '../components/Dialog';
+import { useAuth } from '../contexts/AuthContext';
 import { TicketThreadModal, TicketStatusPill, TICKET_PLATFORM, fmtTime } from '../components/TicketModals';
 
 // Every thread this partner may read: the ones the seller raised (platform 1)
@@ -24,6 +25,23 @@ export default function Tickets() {
   const toggleSelectAll = () => {
     if (selected.length === tickets.length && tickets.length > 0) setSelected([]);
     else setSelected(tickets.map(t => t.id));
+  };
+
+  // Partners may delete only tickets they opened; the API enforces the same.
+  const { user } = useAuth();
+  const canDelete = (t) => user && Number(t.created_by) === Number(user.id);
+  const deleteTicket = async (t) => {
+    const ok = await askConfirm(`Xoá ticket "${t.subject}" cùng toàn bộ tin nhắn? Không thể hoàn tác.`,
+      { title: 'Xoá ticket', okText: 'Xoá', cancelText: 'Huỷ' });
+    if (!ok) return;
+    try {
+      await api.delete(`/tickets/${t.id}`);
+      notify('Đã xoá ticket', { title: 'Ticket', kind: 'success' });
+      setSelected(prev => prev.filter(x => x !== t.id));
+      fetchList();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Xoá thất bại', { title: 'Ticket', kind: 'error' });
+    }
   };
 
   const fetchList = async (opts = {}) => {
@@ -117,13 +135,14 @@ export default function Tickets() {
               <th className="py-2 px-3 text-center">Trả lời</th>
               <th className="py-2 px-3 text-left">Trạng thái</th>
               <th className="py-2 px-3 text-left">Tạo lúc</th>
+              <th className="py-2 px-3 w-10"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={8} className="py-6 text-center text-neutral-400">Đang tải…</td></tr>
+              <tr><td colSpan={9} className="py-6 text-center text-neutral-400">Đang tải…</td></tr>
             ) : tickets.length === 0 ? (
-              <tr><td colSpan={8} className="py-6 text-center text-neutral-400">
+              <tr><td colSpan={9} className="py-6 text-center text-neutral-400">
                 Chưa có ticket nào. Mở một đơn ở tab Orders và bấm <b>Tạo ticket</b>.
               </td></tr>
             ) : tickets.map(t => (
@@ -146,6 +165,17 @@ export default function Tickets() {
                 <td className="py-2 px-3 text-center text-neutral-600">{t.items_count ?? 0}</td>
                 <td className="py-2 px-3"><TicketStatusPill status={t.status} /></td>
                 <td className="py-2 px-3 text-neutral-500 text-xs">{fmtTime(t.created_at)}</td>
+                <td className="py-2 px-3 text-right" onClick={e => e.stopPropagation()}>
+                  {canDelete(t) && (
+                    <button onClick={() => deleteTicket(t)} title="Xoá ticket" aria-label="Xoá ticket"
+                      className="p-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
