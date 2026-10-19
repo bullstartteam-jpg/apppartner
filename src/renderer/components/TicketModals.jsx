@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../services/api';
-import { notify } from './Dialog';
+import { notify, askConfirm } from './Dialog';
+import { useAuth } from '../contexts/AuthContext';
 
 // Ticket threads a partner may read: platform 1 (raised by the seller) and
 // platform 2 (partner↔staff), both only on orders assigned to them. The API
@@ -151,8 +152,9 @@ function Shell({ title, sub, onClose, children, footer, wide = false }) {
   );
 }
 
-/** Read a thread and reply to it. */
+/** Read a thread, reply to it, and delete what this partner wrote. */
 export function TicketThreadModal({ id, onClose, onChanged }) {
+  const { user } = useAuth();
   const [ticket, setTicket] = useState(null);
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
@@ -196,6 +198,38 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
     } finally { setBusy(false); }
   };
 
+  // Partners may delete only their own replies and tickets they opened; the
+  // API enforces the same rule, so the buttons are shown only where it passes.
+  const isMine = (senderId) => user && Number(senderId) === Number(user.id);
+
+  const deleteItem = async (itemId) => {
+    const ok = await askConfirm('Xoá tin nhắn này? Không thể hoàn tác.', { title: 'Xoá tin nhắn', okText: 'Xoá', cancelText: 'Huỷ' });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.delete(`/tickets/${id}/items/${itemId}`);
+      await load();
+      onChanged?.();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Xoá thất bại', { title: 'Ticket', kind: 'error' });
+    } finally { setBusy(false); }
+  };
+
+  const deleteTicket = async () => {
+    const ok = await askConfirm('Xoá ticket này cùng toàn bộ tin nhắn? Không thể hoàn tác.', { title: 'Xoá ticket', okText: 'Xoá', cancelText: 'Huỷ' });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.delete(`/tickets/${id}`);
+      notify('Đã xoá ticket', { title: 'Ticket', kind: 'success' });
+      onChanged?.();
+      onClose();
+    } catch (err) {
+      notify(err?.response?.data?.message || 'Xoá thất bại', { title: 'Ticket', kind: 'error' });
+      setBusy(false);
+    }
+  };
+
   const copyText = (text, label) => { navigator.clipboard.writeText(text); notify(`Đã copy ${label}`, { kind: 'success' }); };
 
   // Opening message is tickets.content; ticket_items holds only replies.
@@ -227,14 +261,22 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
             className="w-full px-3 py-2 bg-[#faf8f6] border border-neutral-200 rounded-lg text-sm resize-y" />
           <AttachmentPicker att={att} />
           <div className="flex justify-between gap-2">
-            <button onClick={toggleSolved} disabled={busy}
-              className={`px-3 py-1.5 text-sm rounded-lg disabled:opacity-40 ${
-                ticket.status === 2
-                  ? 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
-                  : 'bg-emerald-500 hover:bg-emerald-600 text-white'
-              }`}>
-              {ticket.status === 2 ? 'Mở lại' : 'Đánh dấu xong'}
-            </button>
+            <div className="flex gap-2">
+              <button onClick={toggleSolved} disabled={busy}
+                className={`px-3 py-1.5 text-sm rounded-lg disabled:opacity-40 ${
+                  ticket.status === 2
+                    ? 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
+                    : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                }`}>
+                {ticket.status === 2 ? 'Mở lại' : 'Đánh dấu xong'}
+              </button>
+              {isMine(ticket.created_by) && (
+                <button onClick={deleteTicket} disabled={busy}
+                  className="px-3 py-1.5 text-sm rounded-lg text-red-600 hover:bg-red-50 disabled:opacity-40">
+                  Xoá ticket
+                </button>
+              )}
+            </div>
             <button onClick={send} disabled={busy || !canSend}
               className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm rounded-lg">
               {busy ? 'Đang gửi…' : 'Gửi'}
@@ -251,7 +293,18 @@ export function TicketThreadModal({ id, onClose, onChanged }) {
             <div key={m.id} className="border border-neutral-200 rounded-lg p-3">
               <div className="flex justify-between items-center text-xs text-neutral-500 mb-1 gap-2">
                 <span className="font-medium text-neutral-700 truncate">{m.sender?.name || '—'}</span>
-                <span className="shrink-0">{fmtTime(m.created_at)}</span>
+                <span className="shrink-0 flex items-center gap-2">
+                  {fmtTime(m.created_at)}
+                  {m.id !== 'root' && isMine(m.send_by) && (
+                    <button onClick={() => deleteItem(m.id)} disabled={busy} title="Xoá tin nhắn" aria-label="Xoá tin nhắn"
+                      className="p-1 -m-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:pointer-events-none">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  )}
+                </span>
               </div>
               {m.content && <div className="text-sm text-neutral-800 whitespace-pre-wrap break-words">{m.content}</div>}
               <MessageAttachments list={m.attachments} />
