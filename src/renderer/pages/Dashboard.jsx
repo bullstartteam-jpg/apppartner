@@ -37,6 +37,10 @@ export default function Dashboard() {
           sub={`${Number(stats.orders_paid || 0).toLocaleString()} đơn · phần chia của bạn`} />
         <StatCard label="Đơn khách chưa thanh toán" value={`$${Number(stats.revenue_unpaid || 0).toFixed(2)}`} color="amber" loading={loading}
           sub={`${Number(stats.orders_unpaid || 0).toLocaleString()} đơn · phần chia của bạn`} />
+        {stats.push_scan_orders > 0 && (
+          <StatCard label="Đã trừ phí push scan" value={`−$${Number(stats.push_scan_deducted || 0).toFixed(2)}`} color="red" loading={loading}
+            sub={`${Number(stats.push_scan_orders).toLocaleString()} đơn · đã trừ trong doanh thu được chia`} />
+        )}
         <StatCard label="Tổng gangsheet" value={stats.total_gangsheets} color="orange" loading={loading} />
         <StatCard label="Tổng đơn" value={Number(stats.total_orders).toLocaleString()} color="neutral" loading={loading} sub="đơn trong các gang được phân quyền" />
         <StatCard label="Tổng design (_qr)" value={Number(stats.total_metas).toLocaleString()} color="neutral" loading={loading} />
@@ -58,6 +62,7 @@ function StatCard({ label, value, color, loading, sub }) {
     orange:  'bg-orange-50 text-orange-700 border-orange-200',
     green:   'bg-emerald-50 text-emerald-700 border-emerald-200',
     amber:   'bg-amber-50 text-amber-700 border-amber-200',
+    red:     'bg-red-50 text-red-700 border-red-200',
   }[color] || 'bg-white text-neutral-800';
   return (
     <div className={`rounded-xl border border-neutral-200 p-4 shadow-sm ${palette}`}>

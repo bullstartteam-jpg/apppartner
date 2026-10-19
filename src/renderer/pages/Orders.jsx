@@ -323,6 +323,9 @@ export default function Orders() {
                 <td className="py-2 px-3 text-xs"><TrackingCell order={o} /></td>
                 <td className="py-2 px-3 text-right text-neutral-800">
                   {o.partner_revenue != null ? `$${Number(o.partner_revenue).toFixed(2)}` : '—'}
+                  {o.partner_revenue != null && o.push_scan_deduction > 0 && (
+                    <div className="text-[10px] text-red-600">đã trừ ${Number(o.push_scan_deduction).toFixed(2)} push scan</div>
+                  )}
                 </td>
                 <td className="py-2 px-3 text-neutral-500 text-xs">
                   {o.created_at ? new Date(o.created_at).toLocaleDateString() : '—'}
@@ -455,6 +458,9 @@ function OrderDetailModal({ id, onClose }) {
                 )}
                 <Row label="Doanh thu partner"
                   value={order.partner_revenue != null ? `$${Number(order.partner_revenue).toFixed(2)}` : '—'} />
+                {order.push_scan_deduction > 0 && (
+                  <Row label="Trừ phí push scan" value={<span className="text-red-600">−${Number(order.push_scan_deduction).toFixed(2)}{order.partner_revenue != null ? ' (đã trừ trong doanh thu)' : ''}</span>} />
+                )}
                 <Row label="Ngày tạo" value={order.created_at ? new Date(order.created_at).toLocaleString() : '—'} />
                 {order.note && <Row label="Note" value={order.note} />}
               </div>
