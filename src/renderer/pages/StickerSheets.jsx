@@ -49,6 +49,37 @@ const orderChipCls = (o) => ({
 
 const thumb = (url, size = 'w400') => driveThumb(url, size);
 
+// Accessory added to a sheet's item (holo / chip / …). Same chip patterns as
+// the gang builder (chipKindOf in Gangsheet.jsx) so holo/chip get a matching
+// colour; anything else is a neutral pill.
+const accKindOf = (text) => {
+  const s = String(text || '').toLowerCase();
+  if (/holo/.test(s) || /\bhlg[a-z]*\b/.test(s)) return 'holo';
+  if (/small/.test(s) || /\bsmc\b/.test(s)) return 'smallchip';
+  if (/big/.test(s) || /\bbc\b/.test(s)) return 'bigchip';
+  return '';
+};
+const accKind = (a) => accKindOf(a.style) || accKindOf(a.code) || accKindOf(a.name);
+const accLabel = (a) => a.style || a.name || a.code || '';
+const ACC_CLS = {
+  holo: 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
+  bigchip: 'bg-sky-100 text-sky-700 border-sky-200',
+  smallchip: 'bg-sky-100 text-sky-700 border-sky-200',
+  '': 'bg-neutral-100 text-neutral-600 border-neutral-200',
+};
+// Renders a span per accessory (a fragment, so it drops straight into a chip
+// row or a flex-wrap without an extra wrapper).
+function AccessoryTags({ items }) {
+  if (!items?.length) return null;
+  return items.map(a => (
+    <span key={a.key}
+      className={`px-1.5 py-0.5 rounded border text-[10px] font-medium whitespace-nowrap ${ACC_CLS[accKind(a)]}`}
+      title={[a.name, a.style, a.code].filter(Boolean).join(' · ') || 'Accessory'}>
+      +{accLabel(a)}
+    </span>
+  ));
+}
+
 const copyIds = async (ids) => {
   try { await navigator.clipboard.writeText(ids.join('\n')); notify(`Đã copy ${ids.length} ID`, { title: 'Copy', kind: 'success' }); }
   catch { notify('Không copy được', { title: 'Copy', kind: 'error' }); }
@@ -229,9 +260,12 @@ function OrderChipRows({ orders }) {
   const todo = orders.filter(o => gangState(o) !== 'done');
   const done = orders.filter(o => gangState(o) === 'done');
   const chip = (o) => (
-    <span key={o.order_id} className={`px-1.5 py-0.5 rounded border text-[11px] font-mono ${orderChipCls(o)}`}
-      title={`${STATUS_LABEL[o.status] || ''}${gangState(o) === 'part' ? ` · gang ${o.qr_ganged}/${o.qr_total}` : ''}`}>
-      {gangState(o) === 'done' && '✓ '}{o.system_id}
+    <span key={o.order_id} className="inline-flex items-center gap-1 flex-wrap">
+      <span className={`px-1.5 py-0.5 rounded border text-[11px] font-mono ${orderChipCls(o)}`}
+        title={`${STATUS_LABEL[o.status] || ''}${gangState(o) === 'part' ? ` · gang ${o.qr_ganged}/${o.qr_total}` : ''}`}>
+        {gangState(o) === 'done' && '✓ '}{o.system_id}
+      </span>
+      <AccessoryTags items={o.accessories} />
     </span>
   );
   const row = (label, cls, list) => list.length > 0 && (
@@ -334,6 +368,9 @@ function MultiOrders({ orders, options, design, onDesign, onZoom, onGang, busy }
                           <DesignLabel g={p} small />
                           <div className="text-xs text-orange-600 font-semibold mt-0.5">× {p.qty} tờ</div>
                           <div className="text-[10px] text-neutral-400">{p.sticker_count} sticker/tờ</div>
+                          {p.accessories?.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-0.5"><AccessoryTags items={p.accessories} /></div>
+                          )}
                           <div className="mt-0.5"><GangBadge x={p} /></div>
                         </div>
                       </button>
